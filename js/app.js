@@ -1,8 +1,10 @@
 // ── STATE ────────────────────────────────────────
 const STATE_COLORS = ['#3b82f6','#14b8a6','#8b5cf6','#f59e0b','#22c55e','#ef4444','#06b6d4','#ec4899'];
 
+const PROXY_URL = 'https://plejrqzzxnypnxxnamxj.supabase.co/functions/v1/PFtool';
+
 const S = {
-  token: null, proxy: null, userName: null, view: 'token', search: '',
+  token: null, userName: null, view: 'token', search: '',
   data: { feedback: [], discoveries: [], companies: [], messages: [] },
   fil:  { feedback: [], discoveries: [], companies: [] }
 };
@@ -42,10 +44,9 @@ function toast(msg, type) {
 }
 
 // ── API ──────────────────────────────────────────
-async function api(path, tk, px) {
+async function api(path, tk) {
   tk = tk || S.token;
-  px = px !== undefined ? px : S.proxy;
-  const url = px ? `${px}${path}` : `https://api.harvestr.io/v1${path}`;
+  const url = `${PROXY_URL}${path}`;
   const r = await fetch(url, {
     headers: { 'Authorization': `Bearer ${tk}`, 'Content-Type': 'application/json' }
   });
@@ -86,12 +87,11 @@ async function loadAll() {
 // ── GATE ────────────────────────────────────────
 async function testGateToken() {
   const tk = $('gate-token').value.trim();
-  const px = $('gate-proxy').value.trim() || null;
   if (!tk) { toast('Introduce un token', 'error'); return; }
   setBtnLoading('gateTestBtn', true, 'Probando...');
   const el = $('gate-result');
   try {
-    await api('/feedback?limit=1', tk, px);
+    await api('/feedback?limit=1', tk);
     el.innerHTML = '<div class="alert success">\u2713 Token v\u00e1lido \u2014 conexi\u00f3n con Harvestr OK</div>';
   } catch (e) {
     el.innerHTML = '<div class="alert error">\u2717 ' + esc(e.message) + '</div>';
@@ -102,9 +102,8 @@ async function testGateToken() {
 async function submitGate() {
   const name = $('gate-name').value.trim() || 'CSM';
   const tk = $('gate-token').value.trim();
-  const px = $('gate-proxy').value.trim() || null;
   if (!tk) { toast('Introduce tu API token', 'error'); return; }
-  S.token = tk; S.proxy = px; S.userName = name;
+  S.token = tk; S.userName = name;
   $('tokenDot').className = 'token-dot ok';
   $('tokenName').textContent = name;
   showPanel('dashboard');
@@ -121,7 +120,7 @@ async function submitGate() {
 }
 
 function resetToken() {
-  S.token = null; S.proxy = null; S.userName = null;
+  S.token = null; S.userName = null;
   S.data = { feedback: [], discoveries: [], companies: [], messages: [] };
   S.fil  = { feedback: [], discoveries: [], companies: [] };
   $('tokenDot').className = 'token-dot';

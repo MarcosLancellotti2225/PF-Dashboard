@@ -92,10 +92,6 @@
           <input class="form-input" id="gate-token" type="password" placeholder="Pega aqu&iacute; tu token">
           <div class="form-hint">Settings &rarr; Integrations &rarr; API en tu workspace de Harvestr.<br>Scopes necesarios: <strong>read_feedback &middot; read_discovery &middot; read_customer</strong></div>
         </div>
-        <div class="form-row" style="margin-bottom:0;">
-          <label class="form-label">Proxy URL <span style="text-transform:none;font-weight:400;color:var(--text-3)">(solo si hay error CORS)</span></label>
-          <input class="form-input" id="gate-proxy" type="text" placeholder="https://tu-proxy.supabase.co/functions/v1/PFtool">
-        </div>
         <div id="gate-result"></div>
         <div style="display:flex;gap:10px;margin-top:22px;">
           <button class="btn" onclick="testGateToken()" id="gateTestBtn" style="flex-shrink:0;">Probar token</button>
