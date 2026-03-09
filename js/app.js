@@ -2,7 +2,6 @@
 const STATE_COLORS = ['#3b82f6','#14b8a6','#8b5cf6','#f59e0b','#22c55e','#ef4444','#06b6d4','#ec4899'];
 
 const PROXY_URL = 'https://plejrqzzxnypnxxnamxj.supabase.co/functions/v1/PFtool';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBsZWpycXp6eG55cG54eG5hbXhqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE0MDE1MTQsImV4cCI6MjA4Njk3NzUxNH0.MEFppcqC9tJjIxAgobIwT4DvEQBfXm42hXS8ntIPTNo';
 
 const S = {
   token: null, userName: null, view: 'token', search: '',
@@ -50,7 +49,6 @@ async function api(path, tk) {
   const url = `${PROXY_URL}${path}`;
   const r = await fetch(url, {
     headers: {
-      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
       'x-harvestr-token': tk,
       'Content-Type': 'application/json'
     }
@@ -148,7 +146,7 @@ function navigate(view, skipRender) {
   $('topbarTitle').textContent = titles[view] || view;
   $('topbarSub').textContent = S.userName || '';
   $('topbarSep').style.display = S.userName ? 'inline' : 'none';
-  $('exportBtn').style.display = ['feedback','discoveries','companies'].includes(view) ? 'flex' : 'none';
+  $('exportBtn').style.display = ['feedback','discoveries','companies','messages'].includes(view) ? 'flex' : 'none';
 
   if (!S.token) { showPanel('token'); return; }
   if (!skipRender) {
@@ -486,6 +484,17 @@ function exportCSV() {
       id: c.id || '', name: c.name || '',
       domain: c.domain || '', created_at: c.created_at || ''
     }));
+  } else if (S.view === 'messages') {
+    fn = 'harvestr-messages';
+    rows = S.data.messages.map(m => {
+      const a = m.author || m.from || m.user || '';
+      return {
+        id: m.id || '',
+        content: (m.content || m.text || m.body || '').replace(/\n/g, ' '),
+        author: typeof a === 'object' ? (a.name || a.email || '') : a,
+        created_at: m.created_at || ''
+      };
+    });
   }
   if (!rows.length) { toast('Sin datos', 'error'); return; }
   const keys = Object.keys(rows[0]);
