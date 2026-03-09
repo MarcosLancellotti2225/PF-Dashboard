@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Harvestr Dashboard — Signaturit PS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<div id="sidebar">
+  <div class="sidebar-header">
+    <div class="sidebar-logo-box">S</div>
+    <div>
+      <div class="sidebar-brand-name">Signaturit</div>
+      <div class="sidebar-brand-sub">Professional Services</div>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-label">Harvestr</div>
+    <div class="nav-item active" onclick="navigate('dashboard')" id="nav-dashboard">
+      <span class="nav-icon">&#8862;</span> Dashboard
+    </div>
+    <div class="nav-item" onclick="navigate('feedback')" id="nav-feedback">
+      <span class="nav-icon">&#9678;</span> Feedback
+      <span class="nav-badge" id="badge-feedback">&mdash;</span>
+    </div>
+    <div class="nav-item" onclick="navigate('discoveries')" id="nav-discoveries">
+      <span class="nav-icon">&#9672;</span> Discoveries
+      <span class="nav-badge" id="badge-discoveries">&mdash;</span>
+    </div>
+    <div class="nav-item" onclick="navigate('companies')" id="nav-companies">
+      <span class="nav-icon">&#9638;</span> Companies
+      <span class="nav-badge" id="badge-companies">&mdash;</span>
+    </div>
+    <div class="nav-item" onclick="navigate('messages')" id="nav-messages">
+      <span class="nav-icon">&#9993;</span> Messages
+      <span class="nav-badge" id="badge-messages">&mdash;</span>
+    </div>
+  </div>
+
+  <div class="sidebar-section" style="margin-top:auto;">
+    <div class="sidebar-section-label">Navigation</div>
+    <div class="nav-item" onclick="window.open('https://marcoslancellotti2225.github.io/PShome/','_blank')">
+      <span class="nav-icon">&#8598;</span> PS Home
+    </div>
+  </div>
+
+  <div class="sidebar-footer">
+    <div class="token-indicator">
+      <div class="token-dot" id="tokenDot"></div>
+      <div class="token-name" id="tokenName">No token set</div>
+      <button class="token-reset" onclick="resetToken()" title="Cambiar token">&#8634;</button>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div id="main">
+  <div id="topbar">
+    <span class="topbar-title" id="topbarTitle">Dashboard</span>
+    <span class="topbar-sep" id="topbarSep" style="display:none;">&middot;</span>
+    <span class="topbar-sub" id="topbarSub"></span>
+    <div class="topbar-right">
+      <div class="search-wrap">
+        <span class="search-icon">&#8981;</span>
+        <input class="search-input" id="globalSearch" type="text" placeholder="Buscar... (&#8984;K)" oninput="handleSearch(this.value)">
+      </div>
+      <button class="btn" id="exportBtn" onclick="exportCSV()" style="display:none;">&#8595; CSV</button>
+      <button class="btn teal" id="refreshBtn" onclick="refreshData()">&#8634; Refresh</button>
+    </div>
+  </div>
+
+  <div id="content">
+
+    <!-- TOKEN GATE -->
+    <div class="panel active" id="panel-token">
+      <div class="token-gate">
+        <div class="token-gate-icon">&#128273;</div>
+        <h2>Harvestr Dashboard</h2>
+        <p>Introduce tu API token de Harvestr para cargar tu feedback, discoveries y datos de clientes. Todo queda en tu sesi&oacute;n &mdash; no se guarda ning&uacute;n dato en servidor.</p>
+        <div class="form-row">
+          <label class="form-label">Tu nombre</label>
+          <input class="form-input" id="gate-name" type="text" placeholder="Ej: Mar&iacute;a Garc&iacute;a" autocomplete="name">
+        </div>
+        <div class="form-row">
+          <label class="form-label">API Token de Harvestr</label>
+          <input class="form-input" id="gate-token" type="password" placeholder="Pega aqu&iacute; tu token">
+          <div class="form-hint">Settings &rarr; Integrations &rarr; API en tu workspace de Harvestr.<br>Scopes necesarios: <strong>read_feedback &middot; read_discovery &middot; read_customer</strong></div>
+        </div>
+        <div class="form-row" style="margin-bottom:0;">
+          <label class="form-label">Proxy URL <span style="text-transform:none;font-weight:400;color:var(--text-3)">(solo si hay error CORS)</span></label>
+          <input class="form-input" id="gate-proxy" type="text" placeholder="https://tu-proxy.supabase.co/functions/v1/PFtool">
+        </div>
+        <div id="gate-result"></div>
+        <div style="display:flex;gap:10px;margin-top:22px;">
+          <button class="btn" onclick="testGateToken()" id="gateTestBtn" style="flex-shrink:0;">Probar token</button>
+          <button class="btn primary" onclick="submitGate()" id="gateSubmitBtn" style="flex:1;justify-content:center;">Entrar al Dashboard &rarr;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- DASHBOARD -->
+    <div class="panel" id="panel-dashboard">
+      <div id="dash-loading" class="loading-wrap"><div class="spinner"></div> Cargando datos de Harvestr...</div>
+      <div id="dash-ready" style="display:none;">
+        <div class="report-header">
+          <div>
+            <div class="report-title">Dashboard de Feedback</div>
+            <div class="report-meta" id="report-meta"></div>
+          </div>
+          <button class="btn" onclick="window.print()">&#128424; Imprimir reporte</button>
+        </div>
+        <div class="stats-grid" id="statsGrid"></div>
+        <div class="dash-grid-3">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">Discoveries con m&aacute;s Feedback</div>
+                <div class="card-sub">Top features por cantidad de feedback recibido</div>
+              </div>
+            </div>
+            <div class="card-body"><div class="bar-list" id="chart-disc"></div></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">Estado de Discoveries</div>
+                <div class="card-sub">Distribuci&oacute;n por estado actual</div>
+              </div>
+            </div>
+            <div class="card-body"><div class="state-grid" id="chart-states"></div></div>
+          </div>
+        </div>
+        <div class="dash-grid">
+          <div class="card">
+            <div class="card-header"><div class="card-title">Top Companies por Feedback</div></div>
+            <div class="card-body"><div class="bar-list" id="chart-comp"></div></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Feedback Reciente</div>
+              <div class="card-header-right"><button class="btn" style="font-size:12px;padding:5px 10px;" onclick="navigate('feedback')">Ver todo &rarr;</button></div>
+            </div>
+            <div id="recent-list" style="padding:4px 18px 12px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FEEDBACK -->
+    <div class="panel" id="panel-feedback">
+      <div class="card">
+        <div class="table-filters">
+          <select class="filter-select" id="flt-fb-disc" onchange="applyFbFilters()"><option value="">Todas las Discoveries</option></select>
+          <select class="filter-select" id="flt-fb-src" onchange="applyFbFilters()"><option value="">Todos los sources</option></select>
+          <span class="filter-count" id="fb-count"></span>
+        </div>
+        <div id="fb-wrap"><div class="loading-wrap"><div class="spinner"></div></div></div>
+      </div>
+    </div>
+
+    <!-- DISCOVERIES -->
+    <div class="panel" id="panel-discoveries">
+      <div class="card">
+        <div class="table-filters">
+          <select class="filter-select" id="flt-disc-state" onchange="applyDiscFilters()"><option value="">Todos los estados</option></select>
+          <select class="filter-select" id="flt-disc-comp" onchange="applyDiscFilters()"><option value="">Todos los componentes</option></select>
+          <span class="filter-count" id="disc-count"></span>
+        </div>
+        <div id="disc-wrap"><div class="loading-wrap"><div class="spinner"></div></div></div>
+      </div>
+    </div>
+
+    <!-- COMPANIES -->
+    <div class="panel" id="panel-companies">
+      <div class="card">
+        <div class="table-filters"><span class="filter-count" id="comp-count"></span></div>
+        <div id="comp-wrap"><div class="loading-wrap"><div class="spinner"></div></div></div>
+      </div>
+    </div>
+
+    <!-- MESSAGES -->
+    <div class="panel" id="panel-messages">
+      <div class="card">
+        <div id="msg-wrap"><div class="loading-wrap"><div class="spinner"></div></div></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- DRAWER -->
+<div class="drawer-overlay" id="drawerOverlay">
+  <div class="drawer" id="drawerInner"></div>
+</div>
+<div class="drawer-backdrop" onclick="closeDrawer()"></div>
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
