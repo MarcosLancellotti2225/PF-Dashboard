@@ -2,6 +2,7 @@
 const STATE_COLORS = ['#3b82f6','#14b8a6','#8b5cf6','#f59e0b','#22c55e','#ef4444','#06b6d4','#ec4899'];
 
 const PROXY_URL = 'https://plejrqzzxnypnxxnamxj.supabase.co/functions/v1/PFtool';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBsZWpycXp6eG55cG54eG5hbXhqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE0MDE1MTQsImV4cCI6MjA4Njk3NzUxNH0.MEFppcqC9tJjIxAgobIwT4DvEQBfXm42hXS8ntIPTNo';
 
 const S = {
   token: null, userName: null, view: 'token', search: '',
@@ -48,7 +49,11 @@ async function api(path, tk) {
   tk = tk || S.token;
   const url = `${PROXY_URL}${path}`;
   const r = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${tk}`, 'Content-Type': 'application/json' }
+    headers: {
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      'x-harvestr-token': tk,
+      'Content-Type': 'application/json'
+    }
   });
   if (!r.ok) {
     const t = await r.text().catch(() => r.statusText);
