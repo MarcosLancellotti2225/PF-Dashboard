@@ -84,17 +84,13 @@
         <h2>Harvestr Dashboard</h2>
         <p>Introduce tu API token de Harvestr para cargar tu feedback, discoveries y datos de clientes. Todo queda en tu sesi&oacute;n &mdash; no se guarda ning&uacute;n dato en servidor.</p>
         <div class="form-row">
-          <label class="form-label">Tu nombre</label>
+          <label class="form-label">Tu nombre <span style="font-weight:400;color:#888;">(opcional)</span></label>
           <input class="form-input" id="gate-name" type="text" placeholder="Ej: Mar&iacute;a Garc&iacute;a" autocomplete="name">
         </div>
         <div class="form-row">
           <label class="form-label">API Token de Harvestr</label>
           <input class="form-input" id="gate-token" type="password" placeholder="Pega aqu&iacute; tu token">
           <div class="form-hint">Settings &rarr; Integrations &rarr; API en tu workspace de Harvestr.<br>Scopes necesarios: <strong>read_feedback &middot; read_discovery &middot; read_customer</strong></div>
-        </div>
-        <div class="form-row" style="margin-bottom:0;">
-          <label class="form-label">Proxy URL <span style="text-transform:none;font-weight:400;color:var(--text-3)">(solo si hay error CORS)</span></label>
-          <input class="form-input" id="gate-proxy" type="text" placeholder="https://tu-proxy.supabase.co/functions/v1/PFtool">
         </div>
         <div id="gate-result"></div>
         <div style="display:flex;gap:10px;margin-top:22px;">
