@@ -113,6 +113,9 @@
           </div>
           <button class="btn" onclick="window.print()">&#128424; Imprimir reporte</button>
         </div>
+        <div class="table-filters" style="margin-bottom:16px;">
+          <select class="filter-select" id="flt-dash-company" onchange="renderDashboard()"><option value="">Todas las Companies</option></select>
+        </div>
         <div class="stats-grid" id="statsGrid"></div>
         <div class="dash-grid-3">
           <div class="card">
