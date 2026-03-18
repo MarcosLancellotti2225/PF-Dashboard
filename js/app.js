@@ -71,20 +71,26 @@ function safe(v) {
 
 async function loadAll() {
   // Core data (scopes: read_feedback, read_discovery, read_customer)
-  const rs = await Promise.allSettled([
-    api('/feedback?limit=200'),
-    api('/discovery?limit=200'),
-    api('/company?limit=200'),
-    api('/message?limit=100')
-  ]);
+  const endpoints = ['/feedback?limit=200', '/discovery?limit=200', '/company?limit=200', '/message?limit=100'];
+  const rs = await Promise.allSettled(endpoints.map(e => api(e)));
+
+  // Debug: log raw responses to console
+  endpoints.forEach((ep, i) => {
+    const raw = rs[i].status === 'fulfilled' ? rs[i].value : rs[i].reason;
+    console.log(`[API] ${ep}`, rs[i].status, raw);
+  });
+
   S.data.feedback    = safe(rs[0].status === 'fulfilled' ? rs[0].value : []);
   S.data.discoveries = safe(rs[1].status === 'fulfilled' ? rs[1].value : []);
   S.data.companies   = safe(rs[2].status === 'fulfilled' ? rs[2].value : []);
   S.data.messages    = safe(rs[3].status === 'fulfilled' ? rs[3].value : []);
 
+  console.log('[DATA] feedback:', S.data.feedback.length, 'discoveries:', S.data.discoveries.length, 'companies:', S.data.companies.length, 'messages:', S.data.messages.length);
+
   // Users (requires read_user scope — may fail if token lacks it)
   try {
     const uRes = await api('/user?per_page=100');
+    console.log('[API] /user', uRes);
     S.data.users = safe(uRes);
   } catch (e) {
     S.data.users = [];
