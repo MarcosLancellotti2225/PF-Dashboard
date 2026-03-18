@@ -5,7 +5,7 @@ const PROXY_URL = 'https://plejrqzzxnypnxxnamxj.supabase.co/functions/v1/PFtool'
 
 const S = {
   token: null, userName: null, view: 'token', search: '',
-  data: { feedback: [], discoveries: [], companies: [], messages: [] },
+  data: { feedback: [], discoveries: [], companies: [], messages: [], users: [] },
   fil:  { feedback: [], discoveries: [], companies: [] }
 };
 
@@ -74,12 +74,14 @@ async function loadAll() {
     api('/feedback?limit=200'),
     api('/discovery?limit=200'),
     api('/company?limit=200'),
-    api('/message?limit=100')
+    api('/message?limit=100'),
+    api('/user?per_page=100')
   ]);
   S.data.feedback    = safe(rs[0].status === 'fulfilled' ? rs[0].value : []);
   S.data.discoveries = safe(rs[1].status === 'fulfilled' ? rs[1].value : []);
   S.data.companies   = safe(rs[2].status === 'fulfilled' ? rs[2].value : []);
   S.data.messages    = safe(rs[3].status === 'fulfilled' ? rs[3].value : []);
+  S.data.users       = safe(rs[4].status === 'fulfilled' ? rs[4].value : []);
   S.fil.feedback    = [...S.data.feedback];
   S.fil.discoveries = [...S.data.discoveries];
   S.fil.companies   = [...S.data.companies];
@@ -124,7 +126,7 @@ async function submitGate() {
 
 function resetToken() {
   S.token = null; S.userName = null;
-  S.data = { feedback: [], discoveries: [], companies: [], messages: [] };
+  S.data = { feedback: [], discoveries: [], companies: [], messages: [], users: [] };
   S.fil  = { feedback: [], discoveries: [], companies: [] };
   $('tokenDot').className = 'token-dot';
   $('tokenName').textContent = 'No token set';
@@ -263,15 +265,17 @@ function renderDiscTable(items) {
   const wrap = $('disc-wrap');
   if (!shown.length) { wrap.innerHTML = emptyHTML('\u25c8', 'Sin discoveries para este filtro'); return; }
 
-  wrap.innerHTML = '<table><thead><tr><th>Discovery</th><th>Estado</th><th>Componente</th><th>Feedback</th><th>Actualizado</th></tr></thead><tbody>' +
+  wrap.innerHTML = '<table><thead><tr><th>Discovery</th><th>Estado</th><th>Assignee</th><th>Componente</th><th>Feedback</th><th>Actualizado</th></tr></thead><tbody>' +
     shown.map((d, i) => {
       const name = d.name || d.title || '(sin nombre)';
       const desc = d.description || '';
       const state = d.state ? (typeof d.state === 'object' ? d.state.name : d.state) : '\u2014';
+      const aId = d.assigneeId || d.assignee_id;
+      const assignee = d.assignee ? (typeof d.assignee === 'object' ? (d.assignee.name || d.assignee.email) : d.assignee) : (aId ? userNameById(aId) : '\u2014');
       const comp = d.component ? (typeof d.component === 'object' ? d.component.name : d.component) : '\u2014';
       const fbC = d.feedback_count !== undefined ? d.feedback_count : (d.feedbacks_count !== undefined ? d.feedbacks_count : '\u2014');
       const date = d.updated_at ? new Date(d.updated_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '\u2014';
-      return '<tr data-i="' + i + '"><td><div class="td-title">' + esc(name) + '</div>' + (desc ? '<div class="td-excerpt">' + esc(desc.slice(0, 80)) + (desc.length > 80 ? '\u2026' : '') + '</div>' : '') + '</td><td><span class="tag blue">' + esc(state) + '</span></td><td class="td-meta">' + esc(comp) + '</td><td><span class="tag teal">' + fbC + '</span></td><td class="td-date">' + date + '</td></tr>';
+      return '<tr data-i="' + i + '"><td><div class="td-title">' + esc(name) + '</div>' + (desc ? '<div class="td-excerpt">' + esc(desc.slice(0, 80)) + (desc.length > 80 ? '\u2026' : '') + '</div>' : '') + '</td><td><span class="tag blue">' + esc(state) + '</span></td><td class="td-meta">' + esc(assignee || '\u2014') + '</td><td class="td-meta">' + esc(comp) + '</td><td><span class="tag teal">' + fbC + '</span></td><td class="td-date">' + date + '</td></tr>';
     }).join('') + '</tbody></table>';
   clicks(wrap, shown, 'discovery');
 }
@@ -388,6 +392,13 @@ async function loadLinkedFb(discId) {
   }
 }
 
+// ── HELPERS ──────────────────────────────────────
+function userNameById(id) {
+  if (!id) return null;
+  const u = S.data.users.find(u => u.id === id);
+  return u ? (u.name || u.email || String(u.id)) : String(id);
+}
+
 // ── FILTERS ──────────────────────────────────────
 function populateFilters() {
   const discN = new Set();
@@ -400,19 +411,52 @@ function populateFilters() {
   const srcN = new Set(S.data.feedback.map(f => f.source || f.origin).filter(Boolean));
   $('flt-fb-src').innerHTML = '<option value="">Todos los sources</option>' + [...srcN].sort().map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
 
+  // Feedback user filter (reporter / user / author)
+  const fbUserMap = new Map();
+  S.data.feedback.forEach(f => {
+    const u = f.user || f.reporter || f.author || f.createdBy;
+    if (!u) return;
+    if (typeof u === 'object') { if (u.id) fbUserMap.set(String(u.id), u.name || u.email || String(u.id)); }
+    else fbUserMap.set(String(u), userNameById(u) || String(u));
+  });
+  const fbUserEl = $('flt-fb-user');
+  if (fbUserEl) {
+    fbUserEl.innerHTML = '<option value="">Todos los usuarios</option>' + [...fbUserMap.entries()].sort((a,b) => a[1].localeCompare(b[1])).map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
+    fbUserEl.closest('.filter-select') && (fbUserEl.style.display = fbUserMap.size ? '' : 'none');
+  }
+
   const stN = new Set(S.data.discoveries.map(d => d.state ? (typeof d.state === 'object' ? d.state.name : d.state) : null).filter(Boolean));
   $('flt-disc-state').innerHTML = '<option value="">Todos los estados</option>' + [...stN].sort().map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
 
   const compN = new Set(S.data.discoveries.map(d => d.component ? (typeof d.component === 'object' ? d.component.name : d.component) : null).filter(Boolean));
   $('flt-disc-comp').innerHTML = '<option value="">Todos los componentes</option>' + [...compN].sort().map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
+
+  // Discovery assignee filter
+  const assigneeMap = new Map();
+  S.data.discoveries.forEach(d => {
+    const aId = d.assigneeId || d.assignee_id;
+    if (aId) assigneeMap.set(String(aId), userNameById(aId) || String(aId));
+    const a = d.assignee;
+    if (a && typeof a === 'object' && a.id) assigneeMap.set(String(a.id), a.name || a.email || String(a.id));
+  });
+  const discUserEl = $('flt-disc-assignee');
+  if (discUserEl) {
+    discUserEl.innerHTML = '<option value="">Todos los assignees</option>' + [...assigneeMap.entries()].sort((a,b) => a[1].localeCompare(b[1])).map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
+  }
 }
 
 function applyFbFilters() {
   const disc = $('flt-fb-disc').value;
   const src = $('flt-fb-src').value;
+  const userId = $('flt-fb-user') ? $('flt-fb-user').value : '';
   S.fil.feedback = S.data.feedback.filter(f => {
     if (disc) { const d = f.discovery; const k = d ? (typeof d === 'object' ? (d.name || d.title || d.id) : d) : null; if (k !== disc) return false; }
     if (src) { if ((f.source || f.origin || '') !== src) return false; }
+    if (userId) {
+      const u = f.user || f.reporter || f.author || f.createdBy;
+      const uid = u ? (typeof u === 'object' ? String(u.id) : String(u)) : null;
+      if (uid !== userId) return false;
+    }
     return true;
   });
   renderFbTable(S.fil.feedback);
@@ -421,9 +465,14 @@ function applyFbFilters() {
 function applyDiscFilters() {
   const st = $('flt-disc-state').value;
   const comp = $('flt-disc-comp').value;
+  const assignee = $('flt-disc-assignee') ? $('flt-disc-assignee').value : '';
   S.fil.discoveries = S.data.discoveries.filter(d => {
     if (st) { const s = d.state; const k = s ? (typeof s === 'object' ? s.name : s) : null; if (k !== st) return false; }
     if (comp) { const c = d.component; const k = c ? (typeof c === 'object' ? c.name : c) : null; if (k !== comp) return false; }
+    if (assignee) {
+      const aId = d.assigneeId || d.assignee_id || (d.assignee && typeof d.assignee === 'object' ? String(d.assignee.id) : null);
+      if (String(aId) !== assignee) return false;
+    }
     return true;
   });
   renderDiscTable(S.fil.discoveries);
