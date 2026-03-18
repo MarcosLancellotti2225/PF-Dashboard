@@ -158,6 +158,8 @@ function navigate(view, skipRender) {
   $('topbarSub').textContent = S.userName || '';
   $('topbarSep').style.display = S.userName ? 'inline' : 'none';
   $('exportBtn').style.display = ['feedback','discoveries','companies','messages'].includes(view) ? 'flex' : 'none';
+  $('importUsersBtn').style.display = ['feedback','discoveries'].includes(view) ? 'flex' : 'none';
+  $('importUsersInfo').style.display = (S.data.users.length && ['feedback','discoveries'].includes(view)) ? 'inline' : 'none';
 
   if (!S.token) { showPanel('token'); return; }
   if (!skipRender) {
@@ -581,6 +583,70 @@ function exportCSV() {
   a.download = fn + '-' + new Date().toISOString().slice(0, 10) + '.csv';
   a.click();
   toast('CSV descargado', 'success');
+}
+
+// ── IMPORT USERS CSV ─────────────────────────────
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (!lines.length) return [];
+  // Parse header
+  const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, '').toLowerCase());
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = [];
+    let cur = '', inQuote = false;
+    for (let c = 0; c < lines[i].length; c++) {
+      const ch = lines[i][c];
+      if (ch === '"') { inQuote = !inQuote; continue; }
+      if (ch === ',' && !inQuote) { vals.push(cur.trim()); cur = ''; continue; }
+      cur += ch;
+    }
+    vals.push(cur.trim());
+    const obj = {};
+    headers.forEach((h, j) => { obj[h] = vals[j] || ''; });
+    rows.push(obj);
+  }
+  return rows;
+}
+
+function importUsersCSV(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const rows = parseCSV(e.target.result);
+      if (!rows.length) { toast('CSV vac\u00edo', 'error'); return; }
+      // Map CSV columns to user objects. Accept: id, name, email (flexible column names)
+      const users = rows.map(r => ({
+        id: r.id || r.userid || r.user_id || r.externaluid || r.external_uid || '',
+        name: r.name || r.nombre || r.fullname || r.full_name || r.username || '',
+        email: r.email || r.mail || r.correo || ''
+      })).filter(u => u.id || u.name || u.email);
+
+      // Merge with existing users (CSV overrides API data)
+      const merged = new Map();
+      S.data.users.forEach(u => merged.set(String(u.id), u));
+      users.forEach(u => {
+        const key = String(u.id || u.email || u.name);
+        merged.set(key, u);
+      });
+      S.data.users = [...merged.values()];
+
+      // Re-populate filters with new user data
+      populateFilters();
+      if (S.view === 'feedback') renderFbTable(S.fil.feedback);
+      if (S.view === 'discoveries') renderDiscTable(S.fil.discoveries);
+
+      $('importUsersInfo').textContent = users.length + ' usuarios cargados';
+      $('importUsersInfo').style.display = 'inline';
+      toast(users.length + ' usuarios importados del CSV', 'success');
+    } catch (err) {
+      toast('Error leyendo CSV: ' + err.message, 'error');
+    }
+    input.value = '';
+  };
+  reader.readAsText(file);
 }
 
 // ── KEYBOARD SHORTCUTS ──────────────────────────
