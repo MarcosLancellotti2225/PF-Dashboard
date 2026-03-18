@@ -70,18 +70,27 @@ function safe(v) {
 }
 
 async function loadAll() {
+  // Core data (scopes: read_feedback, read_discovery, read_customer)
   const rs = await Promise.allSettled([
     api('/feedback?limit=200'),
     api('/discovery?limit=200'),
     api('/company?limit=200'),
-    api('/message?limit=100'),
-    api('/user?per_page=100')
+    api('/message?limit=100')
   ]);
   S.data.feedback    = safe(rs[0].status === 'fulfilled' ? rs[0].value : []);
   S.data.discoveries = safe(rs[1].status === 'fulfilled' ? rs[1].value : []);
   S.data.companies   = safe(rs[2].status === 'fulfilled' ? rs[2].value : []);
   S.data.messages    = safe(rs[3].status === 'fulfilled' ? rs[3].value : []);
-  S.data.users       = safe(rs[4].status === 'fulfilled' ? rs[4].value : []);
+
+  // Users (requires read_user scope — may fail if token lacks it)
+  try {
+    const uRes = await api('/user?per_page=100');
+    S.data.users = safe(uRes);
+  } catch (e) {
+    S.data.users = [];
+    console.warn('Could not load users (needs read_user scope):', e.message);
+  }
+
   S.fil.feedback    = [...S.data.feedback];
   S.fil.discoveries = [...S.data.discoveries];
   S.fil.companies   = [...S.data.companies];
@@ -399,16 +408,19 @@ function userNameById(id) {
   return u ? (u.name || u.email || String(u.id)) : null;
 }
 
-// Build a map: messageId -> message object for quick lookups
 function msgById(id) {
   return S.data.messages.find(m => String(m.id) === String(id)) || null;
 }
 
-// Get the requester/submitter ID for a feedback item (via its linked message)
-function fbRequesterId(f) {
+// Get the requester/submitter for a feedback item (via its linked message)
+function fbRequesterInfo(f) {
   if (!f.messageId) return null;
   const m = msgById(f.messageId);
-  return m ? (m.requesterId || m.submitterId || null) : null;
+  if (!m) return null;
+  const rId = m.requesterId || m.submitterId;
+  if (!rId) return null;
+  const name = userNameById(rId);
+  return { id: String(rId), name: name || ('User ' + String(rId).slice(0, 8)) };
 }
 
 // ── FILTERS ──────────────────────────────────────
@@ -426,11 +438,8 @@ function populateFilters() {
   // Feedback user filter via message requester/submitter
   const fbUserMap = new Map();
   S.data.feedback.forEach(f => {
-    const rId = fbRequesterId(f);
-    if (rId) {
-      const name = userNameById(rId);
-      fbUserMap.set(String(rId), name || String(rId));
-    }
+    const info = fbRequesterInfo(f);
+    if (info) fbUserMap.set(info.id, info.name);
   });
   const fbUserEl = $('flt-fb-user');
   if (fbUserEl) {
@@ -454,10 +463,10 @@ function populateFilters() {
     const aId = d.assigneeId || d.assignee_id;
     if (aId) {
       const name = userNameById(aId);
-      assigneeMap.set(String(aId), name || String(aId));
+      assigneeMap.set(String(aId), name || ('User ' + String(aId).slice(0, 8)));
     }
     const a = d.assignee;
-    if (a && typeof a === 'object' && a.id) assigneeMap.set(String(a.id), a.name || a.email || String(a.id));
+    if (a && typeof a === 'object' && a.id) assigneeMap.set(String(a.id), a.name || a.email || ('User ' + String(a.id).slice(0, 8)));
   });
   const discUserEl = $('flt-disc-assignee');
   if (discUserEl) {
@@ -473,8 +482,8 @@ function applyFbFilters() {
     if (disc) { const d = f.discovery; const k = d ? (typeof d === 'object' ? (d.name || d.title || d.id) : d) : null; if (k !== disc) return false; }
     if (src) { if ((f.source || f.origin || '') !== src) return false; }
     if (userId) {
-      const rId = fbRequesterId(f);
-      if (String(rId) !== userId) return false;
+      const info = fbRequesterInfo(f);
+      if (!info || info.id !== userId) return false;
     }
     return true;
   });
