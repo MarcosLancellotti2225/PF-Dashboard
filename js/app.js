@@ -192,21 +192,56 @@ function showPanel(id) {
 }
 
 // ── DASHBOARD ────────────────────────────────────
+// Match feedback item to a company ID (handles object or string/ID references)
+function fbMatchesCompany(f, companyId) {
+  const fc = f.company || f.companyId || f.company_id;
+  if (!fc) return false;
+  if (typeof fc === 'object') {
+    return String(fc.id) === companyId || String(fc.name) === companyId;
+  }
+  return String(fc) === companyId;
+}
+
+// Get display name for a company reference in feedback
+function companyLabel(c) {
+  if (!c) return null;
+  if (typeof c === 'object') return c.name || String(c.id);
+  // Try to resolve ID to name from companies list
+  const co = S.data.companies.find(x => String(x.id) === String(c));
+  return co ? co.name : String(c);
+}
+
 function renderDashboard() {
   $('dash-loading').style.display = 'none';
   $('dash-ready').style.display = 'block';
   const now = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' });
   $('report-meta').textContent = (S.userName ? S.userName + ' \u00b7 ' : '') + 'Generado el ' + now;
 
+  // Get selected company filter
+  const selComp = $('flt-dash-company') ? $('flt-dash-company').value : '';
+  const selCompany = selComp ? S.data.companies.find(c => String(c.id) === selComp) : null;
+
+  // Filter feedback based on selected company
+  const fb = selComp ? S.data.feedback.filter(f => fbMatchesCompany(f, selComp)) : S.data.feedback;
+
+  // Debug: log company field structure from first feedback items
+  if (S.data.feedback.length && !renderDashboard._debugged) {
+    renderDashboard._debugged = true;
+    console.log('[DEBUG] Sample feedback company fields:', S.data.feedback.slice(0, 5).map(f => ({ id: f.id, company: f.company, companyId: f.companyId, company_id: f.company_id })));
+    console.log('[DEBUG] Sample companies:', S.data.companies.slice(0, 5).map(c => ({ id: c.id, name: c.name })));
+  }
+
+  const filterLabel = selCompany ? ' (' + selCompany.name + ')' : '';
+
   $('statsGrid').innerHTML =
-    '<div class="stat-card blue"><div class="stat-label">Feedback Total</div><div class="stat-value">' + S.data.feedback.length + '</div><div class="stat-sub">items recibidos</div></div>' +
+    '<div class="stat-card blue"><div class="stat-label">Feedback' + esc(filterLabel) + '</div><div class="stat-value">' + fb.length + '</div><div class="stat-sub">items recibidos</div></div>' +
     '<div class="stat-card teal"><div class="stat-label">Discoveries</div><div class="stat-value">' + S.data.discoveries.length + '</div><div class="stat-sub">features y mejoras</div></div>' +
     '<div class="stat-card purple"><div class="stat-label">Companies</div><div class="stat-value">' + S.data.companies.length + '</div><div class="stat-sub">clientes registrados</div></div>' +
     '<div class="stat-card amber"><div class="stat-label">Messages</div><div class="stat-value">' + S.data.messages.length + '</div><div class="stat-sub">mensajes importados</div></div>';
 
-  // Discoveries with most feedback
+  // Discoveries with most feedback (uses filtered fb)
   const dm = {};
-  S.data.feedback.forEach(f => {
+  fb.forEach(f => {
     const d = f.discovery;
     if (!d) return;
     const k = typeof d === 'object' ? (d.name || d.title || d.id) : d;
@@ -230,33 +265,35 @@ function renderDashboard() {
     ? se.map(([n,c], i) => '<div class="state-row"><div class="state-name"><div class="state-dot" style="background:' + STATE_COLORS[i % STATE_COLORS.length] + '"></div>' + esc(n) + '</div><div class="state-count">' + c + '</div></div>').join('')
     : '<div style="color:var(--text-3);font-size:13px;">Sin discoveries</div>';
 
-  // Top companies by feedback
-  const cm = {};
-  S.data.feedback.forEach(f => {
-    const c = f.company;
-    if (!c) return;
-    const k = typeof c === 'object' ? (c.name || c.id) : c;
-    if (k) cm[k] = (cm[k] || 0) + 1;
-  });
-  const tc = Object.entries(cm).sort((a,b) => b[1] - a[1]).slice(0, 8);
-  const mc = tc[0] ? tc[0][1] : 1;
-  $('chart-comp').innerHTML = tc.length
-    ? tc.map(([n,c]) => '<div class="bar-row"><div class="bar-label" title="' + esc(n) + '">' + esc(n) + '</div><div class="bar-track"><div class="bar-fill teal" style="width:' + ((c/mc)*100) + '%"></div></div><div class="bar-count">' + c + '</div></div>').join('')
-    : '<div style="color:var(--text-3);font-size:13px;">Sin datos de empresa en feedback</div>';
+  // Top companies by feedback (uses companyLabel for proper name resolution)
+  if (!selComp) {
+    const cm = {};
+    fb.forEach(f => {
+      const label = companyLabel(f.company);
+      if (label) cm[label] = (cm[label] || 0) + 1;
+    });
+    const tc = Object.entries(cm).sort((a,b) => b[1] - a[1]).slice(0, 8);
+    const mc = tc[0] ? tc[0][1] : 1;
+    $('chart-comp').innerHTML = tc.length
+      ? tc.map(([n,c]) => '<div class="bar-row"><div class="bar-label" title="' + esc(n) + '">' + esc(n) + '</div><div class="bar-track"><div class="bar-fill teal" style="width:' + ((c/mc)*100) + '%"></div></div><div class="bar-count">' + c + '</div></div>').join('')
+      : '<div style="color:var(--text-3);font-size:13px;">Sin datos de empresa en feedback</div>';
+  } else {
+    $('chart-comp').innerHTML = '<div style="padding:8px 0;font-size:13px;">Filtrando por: <strong>' + esc(selCompany.name) + '</strong> &mdash; ' + fb.length + ' feedback items</div>';
+  }
 
-  // Recent feedback
-  const recent = [...S.data.feedback].sort((a,b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)).slice(0, 6);
+  // Recent feedback (filtered)
+  const recent = [...fb].sort((a,b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)).slice(0, 6);
   $('recent-list').innerHTML = recent.length
     ? recent.map(f => {
         const title = f.title || f.name || '(sin t\u00edtulo)';
-        const company = f.company ? (typeof f.company === 'object' ? f.company.name : f.company) : null;
+        const company = companyLabel(f.company);
         const disc = f.discovery ? (typeof f.discovery === 'object' ? (f.discovery.name || f.discovery.title) : f.discovery) : null;
         const date = f.created_at ? new Date(f.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }) : '';
         return '<div onclick=\'openDrawer(' + JSON.stringify(JSON.stringify(f)) + ',"feedback")\' style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer;border-radius:4px;padding-left:4px;padding-right:4px;" onmouseenter="this.style.background=\'#f8fafc\'" onmouseleave="this.style.background=\'\'">' +
           '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(title) + '</div><div style="font-size:12px;color:var(--text-3);margin-top:2px;">' + [company, disc].filter(Boolean).map(esc).join(' \u00b7 ') + '</div></div>' +
           '<div style="font-size:11.5px;color:var(--text-3);white-space:nowrap;">' + date + '</div></div>';
       }).join('')
-    : '<div style="color:var(--text-3);font-size:13px;padding:12px 0;">Sin feedback disponible</div>';
+    : '<div style="color:var(--text-3);font-size:13px;padding:12px 0;">Sin feedback' + (selComp ? ' para esta company' : ' disponible') + '</div>';
 }
 
 // ── TABLES ──────────────────────────────────────
@@ -311,11 +348,7 @@ function renderCompTable(items) {
 
   wrap.innerHTML = '<table><thead><tr><th>Company</th><th>Dominio</th><th>Feedback</th><th>Creada</th></tr></thead><tbody>' +
     shown.map((c, i) => {
-      const fbCount = S.data.feedback.filter(f => {
-        const fc = f.company; if (!fc) return false;
-        const fn = typeof fc === 'object' ? fc.name : fc;
-        return fn === c.name;
-      }).length;
+      const fbCount = S.data.feedback.filter(f => fbMatchesCompany(f, String(c.id))).length;
       const date = c.created_at ? new Date(c.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '\u2014';
       return '<tr data-i="' + i + '"><td class="td-title">' + esc(c.name || '(sin nombre)') + '</td><td class="td-meta">' + esc(c.domain || c.website || '\u2014') + '</td><td>' + (fbCount > 0 ? '<span class="tag blue">' + fbCount + '</span>' : '<span class="td-meta">0</span>') + '</td><td class="td-date">' + date + '</td></tr>';
     }).join('') + '</tbody></table>';
@@ -484,6 +517,15 @@ function populateFilters() {
   const discUserEl = $('flt-disc-assignee');
   if (discUserEl) {
     discUserEl.innerHTML = '<option value="">Todos los assignees</option>' + [...assigneeMap.entries()].sort((a,b) => a[1].localeCompare(b[1])).map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
+  }
+
+  // Dashboard company filter
+  const dashCompEl = $('flt-dash-company');
+  if (dashCompEl) {
+    const prev = dashCompEl.value;
+    const compNames = S.data.companies.map(c => ({ id: String(c.id || ''), name: c.name || '(sin nombre)' })).sort((a,b) => a.name.localeCompare(b.name));
+    dashCompEl.innerHTML = '<option value="">Todas las Companies</option>' + compNames.map(c => '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>').join('');
+    if (prev) dashCompEl.value = prev;
   }
 }
 
