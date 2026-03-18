@@ -382,7 +382,8 @@ function renderFbTable(items) {
   wrap.innerHTML = '<table><thead><tr><th>Feedback</th><th>Source</th><th>Company</th><th>Discovery</th><th>Fecha</th></tr></thead><tbody>' +
     shown.map((f, i) => {
       const title = f.title || f.name || '(sin t\u00edtulo)';
-      const excerpt = f.content || f.description || f.body || '';
+      const rawExcerpt = f.content || f.description || f.body || '';
+      const excerpt = rawExcerpt.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
       const src = f.source || f.origin || '\u2014';
       const comp = f.company ? (typeof f.company === 'object' ? f.company.name : f.company) : '\u2014';
       const disc = f.discovery ? (typeof f.discovery === 'object' ? (f.discovery.name || f.discovery.title) : f.discovery) : '\u2014';
@@ -402,7 +403,8 @@ function renderDiscTable(items) {
   wrap.innerHTML = '<table><thead><tr><th>Discovery</th><th>Estado</th><th>Assignee</th><th>Componente</th><th>Feedback</th><th>Actualizado</th></tr></thead><tbody>' +
     shown.map((d, i) => {
       const name = d.name || d.title || '(sin nombre)';
-      const desc = d.description || '';
+      const rawDesc = d.description || '';
+      const desc = rawDesc.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
       const state = d.state ? (typeof d.state === 'object' ? d.state.name : d.state) : '\u2014';
       const aId = d.assigneeId || d.assignee_id;
       const assignee = d.assignee ? (typeof d.assignee === 'object' ? (d.assignee.name || d.assignee.email) : d.assignee) : (aId ? userNameById(aId) : '\u2014');
@@ -466,6 +468,18 @@ function closeDrawer() {
   $('drawerOverlay').classList.remove('open');
 }
 
+// Sanitize HTML: allow safe tags, strip dangerous ones (script, iframe, etc.)
+function sanitizeHTML(html) {
+  if (!html) return '';
+  const str = String(html);
+  // Strip script/iframe/object/embed tags and event handlers
+  return str
+    .replace(/<\s*(script|iframe|object|embed|form|input|textarea|button)[^>]*>[\s\S]*?<\/\s*\1\s*>/gi, '')
+    .replace(/<\s*(script|iframe|object|embed|form|input|textarea|button)[^>]*\/?>/gi, '')
+    .replace(/\s+on\w+\s*=\s*["'][^"']*["']/gi, '')
+    .replace(/\s+on\w+\s*=\s*\S+/gi, '');
+}
+
 function buildDrawer(item, type) {
   const typeLabel = { feedback: 'Feedback', discovery: 'Discovery', company: 'Company', message: 'Mensaje' }[type] || type;
   const typeTag = { feedback: 'blue', discovery: 'teal', company: 'purple', message: 'amber' }[type] || 'gray';
@@ -473,7 +487,7 @@ function buildDrawer(item, type) {
   const skip = new Set(['id','title','name','description','content','body','state','component','source','company','discovery','created_at','updated_at','feedback_count','feedbacks_count']);
 
   const keyFields = [];
-  if (item.description || item.content || item.body) keyFields.push({ l: 'Descripci\u00f3n / Contenido', v: item.description || item.content || item.body });
+  if (item.description || item.content || item.body) keyFields.push({ l: 'Descripci\u00f3n / Contenido', v: item.description || item.content || item.body, html: true });
   if (item.state) keyFields.push({ l: 'Estado', v: typeof item.state === 'object' ? (item.state.name || JSON.stringify(item.state)) : item.state });
   if (item.component) keyFields.push({ l: 'Componente', v: typeof item.component === 'object' ? (item.component.name || JSON.stringify(item.component)) : item.component });
   if (item.source) keyFields.push({ l: 'Source', v: item.source });
@@ -494,7 +508,7 @@ function buildDrawer(item, type) {
     '<button class="drawer-close" onclick="closeDrawer()">\u00d7</button>' +
   '</div>' +
   '<div class="drawer-body">' +
-    keyFields.map(f => '<div><div class="field-label">' + esc(f.l) + '</div><div class="field-value">' + esc(String(f.v)) + '</div></div>').join('') +
+    keyFields.map(f => '<div><div class="field-label">' + esc(f.l) + '</div><div class="field-value' + (f.html ? ' rich-content' : '') + '">' + (f.html ? sanitizeHTML(String(f.v)) : esc(String(f.v))) + '</div></div>').join('') +
     (type === 'discovery' ? '<div class="drawer-section"><div class="drawer-section-title">Feedback vinculado a esta Discovery</div><div id="linked-fb-wrap"><div class="loading-wrap" style="padding:16px;"><div class="spinner"></div></div></div></div>' : '') +
     (otherFields.length ? '<div class="drawer-section"><div class="drawer-section-title">Todos los campos</div>' +
       otherFields.map(([k, v]) => '<div style="margin-bottom:10px;"><div class="field-label">' + esc(k.replace(/_/g, ' ')) + '</div><div class="field-value muted">' + (typeof v === 'object' ? '<pre>' + esc(JSON.stringify(v, null, 2)) + '</pre>' : esc(String(v !== null && v !== undefined ? v : '\u2014'))) + '</div></div>').join('') +
