@@ -66,6 +66,11 @@ function safe(v) {
   if (Array.isArray(v.data)) return v.data;
   if (Array.isArray(v.items)) return v.items;
   if (Array.isArray(v.results)) return v.results;
+  // Harvestr API returns named arrays: feedbacks, discoveries, companies, messages, users
+  if (typeof v === 'object') {
+    const keys = Object.keys(v).filter(k => Array.isArray(v[k]));
+    if (keys.length) return v[keys[0]];
+  }
   return [];
 }
 
