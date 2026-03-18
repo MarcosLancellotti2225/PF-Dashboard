@@ -75,7 +75,7 @@ async function loadAll() {
     api('/discovery?limit=200'),
     api('/company?limit=200'),
     api('/message?limit=100'),
-    api('/users?per_page=100')
+    api('/user?per_page=100')
   ]);
   S.data.feedback    = safe(rs[0].status === 'fulfilled' ? rs[0].value : []);
   S.data.discoveries = safe(rs[1].status === 'fulfilled' ? rs[1].value : []);
