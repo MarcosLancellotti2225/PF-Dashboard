@@ -5,6 +5,7 @@ const PROXY_URL = 'https://plejrqzzxnypnxxnamxj.supabase.co/functions/v1/PFtool'
 
 const S = {
   token: null, userName: null, view: 'token', search: '',
+  filters: { companyId: '', userId: '' }, // pre-query filters applied to API calls
   data: { feedback: [], discoveries: [], companies: [], messages: [], users: [] },
   fil:  { feedback: [], discoveries: [], companies: [] }
 };
@@ -74,9 +75,34 @@ function safe(v) {
   return [];
 }
 
+// Load only companies and users (lightweight, for the filter step)
+async function loadCompaniesAndUsers(tk) {
+  tk = tk || S.token;
+  const rs = await Promise.allSettled([
+    api('/company?limit=200', tk),
+    api('/user?per_page=100', tk)
+  ]);
+  S.data.companies = safe(rs[0].status === 'fulfilled' ? rs[0].value : []);
+  S.data.users = safe(rs[1].status === 'fulfilled' ? rs[1].value : []);
+  console.log('[PRELOAD] companies:', S.data.companies.length, 'users:', S.data.users.length);
+}
+
 async function loadAll() {
-  // Core data (scopes: read_feedback, read_discovery, read_customer)
-  const endpoints = ['/feedback?limit=200', '/discovery?limit=200', '/company?limit=200', '/message?limit=100'];
+  // Build query params based on active filters
+  const qp = [];
+  if (S.filters.companyId) qp.push('company_id=' + encodeURIComponent(S.filters.companyId));
+
+  const fbParams = 'limit=200' + (qp.length ? '&' + qp.join('&') : '');
+  const discParams = 'limit=200';
+  const compParams = 'limit=200';
+  const msgParams = 'limit=100';
+
+  const endpoints = [
+    '/feedback?' + fbParams,
+    '/discovery?' + discParams,
+    '/company?' + compParams,
+    '/message?' + msgParams
+  ];
   const rs = await Promise.allSettled(endpoints.map(e => api(e)));
 
   // Debug: log raw responses to console
@@ -91,15 +117,18 @@ async function loadAll() {
   S.data.messages    = safe(rs[3].status === 'fulfilled' ? rs[3].value : []);
 
   console.log('[DATA] feedback:', S.data.feedback.length, 'discoveries:', S.data.discoveries.length, 'companies:', S.data.companies.length, 'messages:', S.data.messages.length);
+  if (S.filters.companyId) console.log('[FILTER] company_id:', S.filters.companyId);
 
   // Users (requires read_user scope — may fail if token lacks it)
-  try {
-    const uRes = await api('/user?per_page=100');
-    console.log('[API] /user', uRes);
-    S.data.users = safe(uRes);
-  } catch (e) {
-    S.data.users = [];
-    console.warn('Could not load users (needs read_user scope):', e.message);
+  if (!S.data.users.length) {
+    try {
+      const uRes = await api('/user?per_page=100');
+      console.log('[API] /user', uRes);
+      S.data.users = safe(uRes);
+    } catch (e) {
+      S.data.users = [];
+      console.warn('Could not load users (needs read_user scope):', e.message);
+    }
   }
 
   S.fil.feedback    = [...S.data.feedback];
@@ -113,13 +142,33 @@ async function loadAll() {
 async function testGateToken() {
   const tk = $('gate-token').value.trim();
   if (!tk) { toast('Introduce un token', 'error'); return; }
-  setBtnLoading('gateTestBtn', true, 'Probando...');
+  setBtnLoading('gateTestBtn', true, 'Cargando...');
   const el = $('gate-result');
   try {
+    // Validate token and preload companies + users for filter selectors
     await api('/feedback?limit=1', tk);
-    el.innerHTML = '<div class="alert success">\u2713 Token v\u00e1lido \u2014 conexi\u00f3n con Harvestr OK</div>';
+    await loadCompaniesAndUsers(tk);
+
+    // Populate filter selectors in the gate
+    const compSel = $('gate-company');
+    if (compSel) {
+      const sorted = [...S.data.companies].sort((a,b) => (a.name || '').localeCompare(b.name || ''));
+      compSel.innerHTML = '<option value="">-- Todas las companies --</option>' +
+        sorted.map(c => '<option value="' + esc(String(c.id)) + '">' + esc(c.name || '(sin nombre)') + '</option>').join('');
+    }
+    const userSel = $('gate-user');
+    if (userSel) {
+      const sorted = [...S.data.users].sort((a,b) => (a.name || a.email || '').localeCompare(b.name || b.email || ''));
+      userSel.innerHTML = '<option value="">-- Todos los usuarios --</option>' +
+        sorted.map(u => '<option value="' + esc(String(u.id)) + '">' + esc(u.name || u.email || String(u.id)) + '</option>').join('');
+    }
+
+    // Show the filter step
+    $('gate-filters').style.display = 'block';
+    el.innerHTML = '<div class="alert success">\u2713 Token v\u00e1lido \u2014 ' + S.data.companies.length + ' companies, ' + S.data.users.length + ' users cargados</div>';
   } catch (e) {
     el.innerHTML = '<div class="alert error">\u2717 ' + esc(e.message) + '</div>';
+    $('gate-filters').style.display = 'none';
   }
   setBtnLoading('gateTestBtn', false, 'Probar token');
 }
@@ -128,9 +177,24 @@ async function submitGate() {
   const name = $('gate-name').value.trim() || 'CSM';
   const tk = $('gate-token').value.trim();
   if (!tk) { toast('Introduce tu API token', 'error'); return; }
+
+  // Capture pre-query filters
+  const compSel = $('gate-company');
+  const userSel = $('gate-user');
+  S.filters.companyId = compSel ? compSel.value : '';
+  S.filters.userId = userSel ? userSel.value : '';
+
   S.token = tk; S.userName = name;
   $('tokenDot').className = 'token-dot ok';
-  $('tokenName').textContent = name;
+
+  // Show active filter in token indicator
+  const filterInfo = [];
+  if (S.filters.companyId) {
+    const c = S.data.companies.find(c => String(c.id) === S.filters.companyId);
+    if (c) filterInfo.push(c.name);
+  }
+  $('tokenName').textContent = name + (filterInfo.length ? ' \u00b7 ' + filterInfo.join(', ') : '');
+
   showPanel('dashboard');
   navigate('dashboard', true);
   $('dash-loading').style.display = 'flex';
@@ -146,10 +210,15 @@ async function submitGate() {
 
 function resetToken() {
   S.token = null; S.userName = null;
+  S.filters = { companyId: '', userId: '' };
   S.data = { feedback: [], discoveries: [], companies: [], messages: [], users: [] };
   S.fil  = { feedback: [], discoveries: [], companies: [] };
   $('tokenDot').className = 'token-dot';
   $('tokenName').textContent = 'No token set';
+  $('gate-filters').style.display = 'none';
+  const compSel = $('gate-company'); if (compSel) compSel.innerHTML = '<option value="">-- Todas las companies --</option>';
+  const userSel = $('gate-user'); if (userSel) userSel.innerHTML = '<option value="">-- Todos los usuarios --</option>';
+  renderDashboard._debugged = false;
   updateBadges();
   navigate('token');
 }
@@ -166,8 +235,14 @@ function navigate(view, skipRender) {
     companies: 'Companies', messages: 'Messages', token: 'Harvestr'
   };
   $('topbarTitle').textContent = titles[view] || view;
-  $('topbarSub').textContent = S.userName || '';
-  $('topbarSep').style.display = S.userName ? 'inline' : 'none';
+  const filterParts = [];
+  if (S.userName) filterParts.push(S.userName);
+  if (S.filters.companyId) {
+    const c = S.data.companies.find(c => String(c.id) === S.filters.companyId);
+    if (c) filterParts.push(c.name);
+  }
+  $('topbarSub').textContent = filterParts.join(' \u00b7 ');
+  $('topbarSep').style.display = filterParts.length ? 'inline' : 'none';
   $('exportBtn').style.display = ['feedback','discoveries','companies','messages'].includes(view) ? 'flex' : 'none';
   $('importUsersBtn').style.display = ['feedback','discoveries'].includes(view) ? 'flex' : 'none';
   $('importUsersInfo').style.display = (S.data.users.length && ['feedback','discoveries'].includes(view)) ? 'inline' : 'none';
@@ -706,5 +781,5 @@ function importUsersCSV(input) {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeDrawer();
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); $('globalSearch').focus(); }
-  if (e.key === 'Enter' && document.activeElement === $('gate-token')) submitGate();
+  if (e.key === 'Enter' && document.activeElement === $('gate-token')) testGateToken();
 });
