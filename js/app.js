@@ -75,7 +75,7 @@ async function loadAll() {
     api('/discovery?limit=200'),
     api('/company?limit=200'),
     api('/message?limit=100'),
-    api('/user?per_page=100')
+    api('/users?per_page=100')
   ]);
   S.data.feedback    = safe(rs[0].status === 'fulfilled' ? rs[0].value : []);
   S.data.discoveries = safe(rs[1].status === 'fulfilled' ? rs[1].value : []);
@@ -395,8 +395,20 @@ async function loadLinkedFb(discId) {
 // ── HELPERS ──────────────────────────────────────
 function userNameById(id) {
   if (!id) return null;
-  const u = S.data.users.find(u => u.id === id);
-  return u ? (u.name || u.email || String(u.id)) : String(id);
+  const u = S.data.users.find(u => String(u.id) === String(id));
+  return u ? (u.name || u.email || String(u.id)) : null;
+}
+
+// Build a map: messageId -> message object for quick lookups
+function msgById(id) {
+  return S.data.messages.find(m => String(m.id) === String(id)) || null;
+}
+
+// Get the requester/submitter ID for a feedback item (via its linked message)
+function fbRequesterId(f) {
+  if (!f.messageId) return null;
+  const m = msgById(f.messageId);
+  return m ? (m.requesterId || m.submitterId || null) : null;
 }
 
 // ── FILTERS ──────────────────────────────────────
@@ -411,18 +423,23 @@ function populateFilters() {
   const srcN = new Set(S.data.feedback.map(f => f.source || f.origin).filter(Boolean));
   $('flt-fb-src').innerHTML = '<option value="">Todos los sources</option>' + [...srcN].sort().map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
 
-  // Feedback user filter (reporter / user / author)
+  // Feedback user filter via message requester/submitter
   const fbUserMap = new Map();
   S.data.feedback.forEach(f => {
-    const u = f.user || f.reporter || f.author || f.createdBy;
-    if (!u) return;
-    if (typeof u === 'object') { if (u.id) fbUserMap.set(String(u.id), u.name || u.email || String(u.id)); }
-    else fbUserMap.set(String(u), userNameById(u) || String(u));
+    const rId = fbRequesterId(f);
+    if (rId) {
+      const name = userNameById(rId);
+      fbUserMap.set(String(rId), name || String(rId));
+    }
   });
   const fbUserEl = $('flt-fb-user');
   if (fbUserEl) {
-    fbUserEl.innerHTML = '<option value="">Todos los usuarios</option>' + [...fbUserMap.entries()].sort((a,b) => a[1].localeCompare(b[1])).map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
-    fbUserEl.closest('.filter-select') && (fbUserEl.style.display = fbUserMap.size ? '' : 'none');
+    if (fbUserMap.size) {
+      fbUserEl.innerHTML = '<option value="">Todos los usuarios</option>' + [...fbUserMap.entries()].sort((a,b) => a[1].localeCompare(b[1])).map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
+      fbUserEl.style.display = '';
+    } else {
+      fbUserEl.style.display = 'none';
+    }
   }
 
   const stN = new Set(S.data.discoveries.map(d => d.state ? (typeof d.state === 'object' ? d.state.name : d.state) : null).filter(Boolean));
@@ -435,7 +452,10 @@ function populateFilters() {
   const assigneeMap = new Map();
   S.data.discoveries.forEach(d => {
     const aId = d.assigneeId || d.assignee_id;
-    if (aId) assigneeMap.set(String(aId), userNameById(aId) || String(aId));
+    if (aId) {
+      const name = userNameById(aId);
+      assigneeMap.set(String(aId), name || String(aId));
+    }
     const a = d.assignee;
     if (a && typeof a === 'object' && a.id) assigneeMap.set(String(a.id), a.name || a.email || String(a.id));
   });
@@ -453,9 +473,8 @@ function applyFbFilters() {
     if (disc) { const d = f.discovery; const k = d ? (typeof d === 'object' ? (d.name || d.title || d.id) : d) : null; if (k !== disc) return false; }
     if (src) { if ((f.source || f.origin || '') !== src) return false; }
     if (userId) {
-      const u = f.user || f.reporter || f.author || f.createdBy;
-      const uid = u ? (typeof u === 'object' ? String(u.id) : String(u)) : null;
-      if (uid !== userId) return false;
+      const rId = fbRequesterId(f);
+      if (String(rId) !== userId) return false;
     }
     return true;
   });
