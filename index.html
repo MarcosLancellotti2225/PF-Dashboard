@@ -71,6 +71,8 @@
         <input class="search-input" id="globalSearch" type="text" placeholder="Buscar... (&#8984;K)" oninput="handleSearch(this.value)">
       </div>
       <button class="btn" id="exportBtn" onclick="exportCSV()" style="display:none;">&#8595; CSV</button>
+      <label class="btn" id="importUsersBtn" style="display:none;cursor:pointer;">&#8593; Cargar usuarios CSV<input type="file" accept=".csv" onchange="importUsersCSV(this)" style="display:none;"></label>
+      <span id="importUsersInfo" style="display:none;font-size:11px;color:var(--text-3);white-space:nowrap;"></span>
       <button class="btn teal" id="refreshBtn" onclick="refreshData()">&#8634; Refresh</button>
     </div>
   </div>
