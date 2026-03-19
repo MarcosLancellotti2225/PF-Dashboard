@@ -94,16 +94,24 @@ async function apiAllPages(path, tk) {
   let all = [];
   let page = 1;
   const maxPages = 50; // safety limit
+  // Extract per_page from path to know the expected page size
+  const ppMatch = path.match(/per_page=(\d+)/);
+  const perPage = ppMatch ? parseInt(ppMatch[1]) : 25;
   while (page <= maxPages) {
     const sep = path.includes('?') ? '&' : '?';
     const res = await api(path + sep + 'page=' + page, tk);
     const items = safe(res);
     all = all.concat(items);
-    // Check pageInfos for total pages
+    // Check pageInfos for total pages (try all known field names)
     const pi = res && res.pageInfos;
-    const totalPages = pi ? (pi.totalPages || pi.total_pages || pi.lastPage || pi.last_page || 0) : 0;
+    const totalPages = pi ? (pi.totalPages || pi.total_pages || pi.lastPage || pi.last_page || pi.pages || 0) : 0;
+    if (page === 1 && pi) console.log('[PAGE-INFO] ' + path + ' pageInfos:', JSON.stringify(pi));
     console.log('[PAGE] ' + path + ' page=' + page + '/' + (totalPages || '?') + ' got=' + items.length + ' total=' + all.length);
-    if (!items.length || page >= totalPages) break;
+    // Stop conditions: no items, or we know totalPages and reached it, or got less than a full page
+    if (!items.length) break;
+    if (totalPages > 0 && page >= totalPages) break;
+    if (totalPages === 0 && items.length < perPage) break; // got less than full page = last page
+    // If we got a full page and don't know totalPages, keep going
     page++;
   }
   return all;
@@ -246,14 +254,40 @@ async function testGateToken() {
     S._preloadedDiscoveries = S.data.discoveries;
 
     // ── USER-CENTRIC CROSS-REFERENCE ──
-    // Find ALL user records matching the email (could be multiple: CUSTOMER + COLLABORATOR)
+    // Ensure me is in the users list (bulk load might not have included them)
+    if (!S.data.users.find(u => String(u.id) === String(me.id))) {
+      S.data.users.push(me);
+    }
+    // Also load ALL users matching this email (could have multiple records)
+    let emailUsers = [];
+    try {
+      const euRes = await api('/user?email=' + encodeURIComponent(email), tk);
+      emailUsers = safe(euRes);
+      // Merge into users list
+      emailUsers.forEach(eu => {
+        if (!S.data.users.find(u => String(u.id) === String(eu.id))) {
+          S.data.users.push(eu);
+        }
+      });
+    } catch(e) { /* ignore */ }
+
+    // Rebuild user map with complete data
+    userMap.clear();
+    S.data.users.forEach(u => userMap.set(String(u.id), u));
+
+    // Find ALL user IDs for this email
     const emailLower = email.toLowerCase();
     const matchingUsers = S.data.users.filter(u => (u.email || '').toLowerCase() === emailLower);
     const myUserIds = new Set(matchingUsers.map(u => String(u.id)));
-    // Also add the gate user
     myUserIds.add(String(me.id));
 
-    console.log('[XREF] User IDs for email:', [...myUserIds], 'matching records:', matchingUsers.length);
+    console.log('[XREF] User IDs for email:', [...myUserIds], 'matching records:', matchingUsers.length, matchingUsers.map(u => u.name + ' ' + u.type));
+
+    // Debug: log first items to see actual field structure
+    if (S.data.messages.length) console.log('[XREF-DEBUG] First message keys:', Object.keys(S.data.messages[0]), 'requesterId:', S.data.messages[0].requesterId, 'submitterId:', S.data.messages[0].submitterId);
+    if (S.data.feedback.length) console.log('[XREF-DEBUG] First feedback keys:', Object.keys(S.data.feedback[0]), 'messageId:', S.data.feedback[0].messageId);
+    if (S.data.discoveries.length) console.log('[XREF-DEBUG] First discovery keys:', Object.keys(S.data.discoveries[0]), 'assigneeId:', S.data.discoveries[0].assigneeId);
+    console.log('[XREF-DEBUG] me.id:', me.id, 'type:', typeof me.id);
 
     // Messages where this user is requester or submitter
     const myMessages = S.data.messages.filter(m =>
@@ -261,6 +295,11 @@ async function testGateToken() {
     );
     const myMessageIds = new Set(myMessages.map(m => String(m.id)));
     console.log('[XREF] My messages:', myMessages.length);
+    if (!myMessages.length && S.data.messages.length) {
+      // Debug: show sample requesterId/submitterId to understand format
+      const sample = S.data.messages.slice(0, 3).map(m => ({ requesterId: m.requesterId, submitterId: m.submitterId }));
+      console.log('[XREF-DEBUG] No messages matched. Sample requesterId/submitterId:', sample, 'looking for IDs:', [...myUserIds]);
+    }
 
     // Feedback linked to my messages (messageId matches)
     const myFeedback = S.data.feedback.filter(f => myMessageIds.has(String(f.messageId || '')));
