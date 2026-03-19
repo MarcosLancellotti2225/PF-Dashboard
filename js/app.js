@@ -5,9 +5,19 @@ const PROXY_URL = 'https://plejrqzzxnypnxxnamxj.supabase.co/functions/v1/PFtool'
 
 const S = {
   token: null, userName: null, view: 'token', search: '',
-  filters: { companyId: '', userId: '' }, // pre-query filters applied to API calls
+  filters: { companyId: '', userId: '' },
   data: { feedback: [], discoveries: [], companies: [], messages: [], users: [] },
-  fil:  { feedback: [], discoveries: [], companies: [] }
+  fil:  { feedback: [], discoveries: [], companies: [] },
+  // User-centric cross-reference: everything connected to the logged-in email
+  profile: {
+    user: null,            // the /user record found by email
+    userIds: new Set(),    // all user IDs that match this person (same email across records)
+    myMessages: [],        // messages where user is requester or submitter
+    myFeedback: [],        // feedback linked to user's messages
+    myDiscoveries: [],     // discoveries where user is assignee OR linked via feedback
+    myCompanies: [],       // companies connected to user (via companyId or feedback chain)
+    companyMap: new Map()   // companyId -> { company, users[], feedback[], discoveries[] }
+  }
 };
 
 // ── UTILS ────────────────────────────────────────
@@ -206,19 +216,6 @@ async function testGateToken() {
     const discMap = new Map();
     S.data.discoveries.forEach(d => discMap.set(String(d.id), d));
 
-    // Find my companies: the user's own companyId, plus companies of users I manage
-    const myCompanyIds = new Set();
-    if (me.companyId) myCompanyIds.add(String(me.companyId));
-
-    // Find collaborators (type=COLLABORATOR) vs customers
-    const collaborators = S.data.users.filter(u => u.type === 'COLLABORATOR');
-    const customers = S.data.users.filter(u => u.type === 'CUSTOMER' || u.type === 'COMPANY_DEFAULT');
-
-    // Find all companies that have users
-    customers.forEach(u => {
-      if (u.companyId) myCompanyIds.add(String(u.companyId));
-    });
-
     // Enrich feedback with resolved references
     S.data.feedback = S.data.feedback.map(f => {
       const msg = f.messageId ? msgMap.get(String(f.messageId)) : null;
@@ -247,6 +244,65 @@ async function testGateToken() {
     });
 
     S._preloadedDiscoveries = S.data.discoveries;
+
+    // ── USER-CENTRIC CROSS-REFERENCE ──
+    // Find ALL user records matching the email (could be multiple: CUSTOMER + COLLABORATOR)
+    const emailLower = email.toLowerCase();
+    const matchingUsers = S.data.users.filter(u => (u.email || '').toLowerCase() === emailLower);
+    const myUserIds = new Set(matchingUsers.map(u => String(u.id)));
+    // Also add the gate user
+    myUserIds.add(String(me.id));
+
+    console.log('[XREF] User IDs for email:', [...myUserIds], 'matching records:', matchingUsers.length);
+
+    // Messages where this user is requester or submitter
+    const myMessages = S.data.messages.filter(m =>
+      myUserIds.has(String(m.requesterId || '')) || myUserIds.has(String(m.submitterId || ''))
+    );
+    const myMessageIds = new Set(myMessages.map(m => String(m.id)));
+    console.log('[XREF] My messages:', myMessages.length);
+
+    // Feedback linked to my messages (messageId matches)
+    const myFeedback = S.data.feedback.filter(f => myMessageIds.has(String(f.messageId || '')));
+    console.log('[XREF] My feedback (via messages):', myFeedback.length);
+
+    // Discoveries where user is assignee
+    const myDiscAssigned = S.data.discoveries.filter(d => myUserIds.has(String(d.assigneeId || '')));
+    // Discoveries linked via my feedback (discoveryId from feedback)
+    const myDiscFbIds = new Set(myFeedback.map(f => String(f.discoveryId || '')).filter(Boolean));
+    const myDiscViaFb = S.data.discoveries.filter(d => myDiscFbIds.has(String(d.id)) && !myUserIds.has(String(d.assigneeId || '')));
+    const myDiscoveries = [...myDiscAssigned, ...myDiscViaFb];
+    console.log('[XREF] My discoveries: assigned=' + myDiscAssigned.length + ' via feedback=' + myDiscViaFb.length + ' total=' + myDiscoveries.length);
+
+    // Companies connected to this user
+    const myCompanyIds = new Set();
+    matchingUsers.forEach(u => { if (u.companyId) myCompanyIds.add(String(u.companyId)); });
+    // Also companies from feedback chain (requester's company)
+    myFeedback.forEach(f => { if (f._companyId) myCompanyIds.add(f._companyId); });
+    const myCompanies = S.data.companies.filter(c => myCompanyIds.has(String(c.id)));
+    console.log('[XREF] My companies:', myCompanies.length, myCompanies.map(c => c.name));
+
+    // Build per-company detail map
+    const companyDetailMap = new Map();
+    myCompanies.forEach(c => {
+      const cId = String(c.id);
+      const cUsers = S.data.users.filter(u => String(u.companyId) === cId);
+      const cFeedback = S.data.feedback.filter(f => f._companyId === cId);
+      const cDiscIds = new Set(cFeedback.map(f => String(f.discoveryId || '')).filter(Boolean));
+      const cDiscoveries = S.data.discoveries.filter(d => cDiscIds.has(String(d.id)));
+      companyDetailMap.set(cId, { company: c, users: cUsers, feedback: cFeedback, discoveries: cDiscoveries });
+    });
+
+    // Store in state
+    S.profile = {
+      user: me,
+      userIds: myUserIds,
+      myMessages,
+      myFeedback,
+      myDiscoveries,
+      myCompanies,
+      companyMap: companyDetailMap
+    };
 
     // Store cross-referenced data for export
     S._crossedData = {
@@ -305,17 +361,20 @@ async function testGateToken() {
         sorted.map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
     }
 
-    // Show summary
+    // Show summary with user-centric cross-reference
     const summary = $('gate-summary');
     if (summary) {
-      const compWithFb = S.data.companies.filter(c => S.data.feedback.some(f => f._companyId === String(c.id)));
       summary.innerHTML =
         '<div style="background:var(--bg-2);border-radius:var(--r);padding:14px;font-size:13px;line-height:1.7;">' +
+        '<div style="font-size:14px;font-weight:600;margin-bottom:6px;">Tu perfil cruzado</div>' +
         '<div><strong>Usuario:</strong> ' + esc(me.name || '') + ' &lt;' + esc(me.email || '') + '&gt; <span class="tag gray">' + esc(me.type || '') + '</span></div>' +
-        '<div><strong>Collaborators:</strong> ' + collaborators.length + ' &nbsp; <strong>Customers:</strong> ' + customers.length + '</div>' +
-        '<div><strong>Companies:</strong> ' + S.data.companies.length + ' total, ' + compWithFb.length + ' con feedback</div>' +
-        '<div><strong>Feedback:</strong> ' + S.data.feedback.length + ' &nbsp; <strong>Discoveries:</strong> ' + S.data.discoveries.length + ' &nbsp; <strong>Messages:</strong> ' + S.data.messages.length + '</div>' +
-        '<div><strong>Teammates (assignees):</strong> ' + teammateMap.size + '</div>' +
+        '<div><strong>Tus messages:</strong> ' + myMessages.length + ' (como requester/submitter)</div>' +
+        '<div><strong>Tu feedback:</strong> ' + myFeedback.length + ' (vinculado a tus messages)</div>' +
+        '<div><strong>Tus discoveries:</strong> ' + myDiscoveries.length + ' (assigned: ' + myDiscAssigned.length + ', via feedback: ' + myDiscViaFb.length + ')</div>' +
+        '<div><strong>Tus companies:</strong> ' + myCompanies.length +
+          (myCompanies.length ? ' &mdash; ' + myCompanies.map(c => '<span class="tag purple">' + esc(c.name) + '</span>').join(' ') : '') + '</div>' +
+        '<hr style="border:0;border-top:1px solid var(--border);margin:8px 0;">' +
+        '<div style="color:var(--text-3);">Total en workspace: ' + S.data.feedback.length + ' feedback, ' + S.data.discoveries.length + ' discoveries, ' + S.data.companies.length + ' companies, ' + S.data.messages.length + ' messages</div>' +
         '</div>';
     }
 
@@ -431,6 +490,7 @@ function resetToken() {
   S.data = { feedback: [], discoveries: [], companies: [], messages: [], users: [] };
   S.fil  = { feedback: [], discoveries: [], companies: [] };
   S._allData = null; S._crossedData = null; S._gateUser = null; S._stateMap = null;
+  S.profile = { user: null, userIds: new Set(), myMessages: [], myFeedback: [], myDiscoveries: [], myCompanies: [], companyMap: new Map() };
   $('tokenDot').className = 'token-dot';
   $('tokenName').textContent = 'No token set';
   $('gate-step1').style.display = 'block';
@@ -438,6 +498,172 @@ function resetToken() {
   $('gate-result').innerHTML = '';
   updateBadges();
   navigate('token');
+}
+
+// ── USER PROFILE ─────────────────────────────────
+function stateBadgeClass(stateName) {
+  if (!stateName) return 'default';
+  const s = stateName.toLowerCase();
+  if (s.includes('candidate')) return 'candidate';
+  if (s.includes('new')) return 'new';
+  if (s.includes('spec')) return 'spec';
+  if (s.includes('progress')) return 'progress';
+  if (s.includes('review')) return 'review';
+  if (s.includes('released') && s.includes('pre')) return 'preprod';
+  if (s.includes('released') || s.includes('prod')) return 'prod';
+  if (s.includes('discard')) return 'discarded';
+  return 'default';
+}
+
+function renderProfile() {
+  const p = S.profile;
+  if (!p.user) return;
+  const me = p.user;
+  const initials = ((me.name || me.email || '?').match(/\b\w/g) || []).slice(0, 2).join('').toUpperCase();
+
+  // Header
+  const header = $('profile-header');
+  header.innerHTML =
+    '<div class="profile-avatar">' + esc(initials) + '</div>' +
+    '<div class="profile-info">' +
+      '<div class="profile-name">' + esc(me.name || me.email) + '</div>' +
+      '<div class="profile-email">' + esc(me.email || '') + '</div>' +
+      '<div class="profile-meta">' +
+        '<div class="profile-meta-item"><strong>Role:</strong> <span class="tag gray">' + esc(me.type || 'N/A') + '</span></div>' +
+        '<div class="profile-meta-item"><strong>Feedback:</strong> ' + p.myFeedback.length + '</div>' +
+        '<div class="profile-meta-item"><strong>Discoveries:</strong> ' + p.myDiscoveries.length + '</div>' +
+        '<div class="profile-meta-item"><strong>Companies:</strong> ' + p.myCompanies.length + '</div>' +
+        '<div class="profile-meta-item"><strong>Messages:</strong> ' + p.myMessages.length + '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="profile-sidebar">' +
+      (p.myCompanies.length ? p.myCompanies.map(c =>
+        '<div class="profile-sidebar-row"><span class="label">Company</span><span class="value">' + esc(c.name) + '</span></div>'
+      ).join('') : '<div class="profile-sidebar-row"><span class="label">Company</span><span class="value">-</span></div>') +
+      (me.externalUid ? '<div class="profile-sidebar-row"><span class="label">External ID</span><span class="value" style="font-family:monospace;font-size:11px;">' + esc(me.externalUid) + '</span></div>' : '') +
+    '</div>';
+
+  // Counts
+  $('profile-fb-count').textContent = p.myFeedback.length;
+  $('profile-disc-count').textContent = p.myDiscoveries.length;
+  $('profile-comp-count').textContent = p.myCompanies.length;
+  $('profile-msg-count').textContent = p.myMessages.length;
+
+  // Badge
+  const badge = $('badge-profile');
+  if (badge) badge.textContent = p.myFeedback.length + p.myDiscoveries.length || '\u2014';
+
+  // Tab: Feedback
+  renderProfileFeedback();
+  // Tab: Discoveries
+  renderProfileDiscoveries();
+  // Tab: Companies
+  renderProfileCompanies();
+  // Tab: Messages
+  renderProfileMessages();
+}
+
+function renderProfileFeedback() {
+  const wrap = $('profile-tab-pfb');
+  const items = [...S.profile.myFeedback].sort((a, b) => new Date(b._date || 0) - new Date(a._date || 0));
+  if (!items.length) { wrap.innerHTML = emptyHTML('\u25ce', 'Sin feedback vinculado a tu email'); return; }
+  wrap.innerHTML = items.map(f => {
+    const title = f._title || '(sin t\u00edtulo)';
+    const content = (f._content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    const date = f._date ? new Date(f._date).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+    return '<div class="fb-card" onclick=\'openDrawer(' + JSON.stringify(JSON.stringify(f)) + ',"feedback")\'>' +
+      '<div class="fb-card-title">' + esc(title) + '</div>' +
+      '<div class="fb-card-sub">' +
+        (f._discoveryName ? '<span>' + esc(f._discoveryName) + '</span>' : '') +
+        (f._source ? '<span class="tag gray" style="font-size:10.5px;">' + esc(f._source) + '</span>' : '') +
+        (f._companyName ? '<span>' + esc(f._companyName) + '</span>' : '') +
+        (date ? '<span>' + date + '</span>' : '') +
+      '</div>' +
+      (content ? '<div class="fb-card-content">' + esc(content.slice(0, 200)) + '</div>' : '') +
+    '</div>';
+  }).join('');
+}
+
+function renderProfileDiscoveries() {
+  const wrap = $('profile-tab-pdisc');
+  const items = [...S.profile.myDiscoveries].sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+  if (!items.length) { wrap.innerHTML = emptyHTML('\u25c8', 'Sin discoveries vinculadas a tu email'); return; }
+  wrap.innerHTML = items.map(d => {
+    const title = d.title || d.name || '(sin nombre)';
+    const stateName = d.discoveryStateId ? (S._stateMap && S._stateMap.get(String(d.discoveryStateId))) || '' : '';
+    const badgeClass = stateBadgeClass(stateName);
+    const desc = (d.description || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    const fbCount = S.data.feedback.filter(f => String(f.discoveryId) === String(d.id)).length;
+    const updated = d.updatedAt ? new Date(d.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase() : '';
+    const assignee = d.assigneeId ? (userNameById(d.assigneeId) || '') : '';
+    const isAssigned = S.profile.userIds.has(String(d.assigneeId || ''));
+    return '<div class="disc-card" onclick=\'openDrawer(' + JSON.stringify(JSON.stringify(d)) + ',"discovery")\'>' +
+      '<div class="disc-card-title">' +
+        esc(title) +
+        (stateName ? ' <span class="state-badge ' + badgeClass + '">' + esc(stateName) + '</span>' : '') +
+        (fbCount ? ' <span class="tag gray" style="font-size:10.5px;">\u25ce ' + fbCount + '</span>' : '') +
+      '</div>' +
+      '<div class="disc-card-meta">' +
+        (updated ? 'LAST STATE UPDATE: ' + updated : '') +
+        (assignee ? (updated ? ' &middot; ' : '') + (isAssigned ? '<strong>' + esc(assignee) + ' (t\u00fa)</strong>' : esc(assignee)) : '') +
+      '</div>' +
+      (desc ? '<div class="disc-card-desc">' + esc(desc.slice(0, 200)) + '</div>' : '') +
+    '</div>';
+  }).join('');
+}
+
+function renderProfileCompanies() {
+  const wrap = $('profile-tab-pcomp');
+  if (!S.profile.myCompanies.length) { wrap.innerHTML = emptyHTML('\u25a6', 'Sin companies vinculadas'); return; }
+  wrap.innerHTML = S.profile.myCompanies.map(c => {
+    const detail = S.profile.companyMap.get(String(c.id));
+    const segs = (c.segments || []).map(s => s.name).filter(Boolean);
+    return '<div class="company-detail-card">' +
+      '<div class="company-detail-name">' + esc(c.name || '(sin nombre)') + '</div>' +
+      '<div class="company-detail-stats">' +
+        '<div class="company-detail-stat"><strong>' + (detail ? detail.feedback.length : 0) + '</strong> feedback</div>' +
+        '<div class="company-detail-stat"><strong>' + (detail ? detail.discoveries.length : 0) + '</strong> discoveries</div>' +
+        '<div class="company-detail-stat"><strong>' + (detail ? detail.users.length : 0) + '</strong> users</div>' +
+        (segs.length ? '<div class="company-detail-stat">Segments: ' + segs.map(s => '<span class="tag purple" style="font-size:10.5px;">' + esc(s) + '</span>').join(' ') + '</div>' : '') +
+      '</div>' +
+      (detail && detail.discoveries.length ?
+        '<div style="margin-top:12px;"><div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:8px;">Discoveries de esta company:</div>' +
+        detail.discoveries.slice(0, 5).map(d => {
+          const sn = d.discoveryStateId ? (S._stateMap && S._stateMap.get(String(d.discoveryStateId))) || '' : '';
+          return '<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;cursor:pointer;" onclick=\'openDrawer(' + JSON.stringify(JSON.stringify(d)) + ',"discovery")\'>' +
+            esc(d.title || '') + (sn ? ' <span class="state-badge ' + stateBadgeClass(sn) + '">' + esc(sn) + '</span>' : '') +
+          '</div>';
+        }).join('') +
+        (detail.discoveries.length > 5 ? '<div style="font-size:12px;color:var(--text-3);margin-top:6px;">+ ' + (detail.discoveries.length - 5) + ' m\u00e1s</div>' : '') +
+        '</div>' : '') +
+    '</div>';
+  }).join('');
+}
+
+function renderProfileMessages() {
+  const wrap = $('profile-tab-pmsg');
+  const items = [...S.profile.myMessages].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  if (!items.length) { wrap.innerHTML = emptyHTML('\u2709', 'Sin messages vinculados'); return; }
+  wrap.innerHTML = items.map(m => {
+    const title = m.title || '';
+    const content = (m.content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    const date = m.createdAt ? new Date(m.createdAt).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+    return '<div class="fb-card" onclick=\'openDrawer(' + JSON.stringify(JSON.stringify(m)) + ',"message")\'>' +
+      (title ? '<div class="fb-card-title">' + esc(title) + '</div>' : '') +
+      '<div class="fb-card-sub">' +
+        (m.channel ? '<span class="tag gray" style="font-size:10.5px;">' + esc(m.channel) + '</span>' : '') +
+        (date ? '<span>' + date + '</span>' : '') +
+      '</div>' +
+      (content ? '<div class="fb-card-content">' + esc(content.slice(0, 200)) + '</div>' : '') +
+    '</div>';
+  }).join('');
+}
+
+function switchProfileTab(tabId) {
+  document.querySelectorAll('.profile-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.profile-tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelector('.profile-tab[data-tab="' + tabId + '"]').classList.add('active');
+  $('profile-tab-' + tabId).classList.add('active');
 }
 
 // ── NAVIGATION ───────────────────────────────────
@@ -449,7 +675,7 @@ function navigate(view, skipRender) {
 
   const titles = {
     dashboard: 'Dashboard', feedback: 'Feedback', discoveries: 'Discoveries',
-    companies: 'Companies', messages: 'Messages', token: 'Harvestr'
+    companies: 'Companies', messages: 'Messages', profile: 'Mi Perfil', token: 'Harvestr'
   };
   $('topbarTitle').textContent = titles[view] || view;
   const filterParts = [];
@@ -476,6 +702,7 @@ function navigate(view, skipRender) {
     if (view === 'companies')   renderCompTable(S.fil.companies);
     if (view === 'messages')    renderMsgTable(S.data.messages);
     if (view === 'dashboard')   renderDashboard();
+    if (view === 'profile')     renderProfile();
   } else {
     showPanel(view);
   }
@@ -519,11 +746,13 @@ function renderDashboard() {
     }
   }
 
+  const p = S.profile;
+  const hasProfile = p && p.user;
   $('statsGrid').innerHTML =
-    '<div class="stat-card blue"><div class="stat-label">Feedback</div><div class="stat-value">' + fb.length + '</div><div class="stat-sub">items recibidos</div></div>' +
-    '<div class="stat-card teal"><div class="stat-label">Discoveries</div><div class="stat-value">' + disc.length + '</div><div class="stat-sub">features y mejoras</div></div>' +
-    '<div class="stat-card purple"><div class="stat-label">Companies</div><div class="stat-value">' + S.data.companies.length + '</div><div class="stat-sub">clientes registrados</div></div>' +
-    '<div class="stat-card amber"><div class="stat-label">Messages</div><div class="stat-value">' + S.data.messages.length + '</div><div class="stat-sub">mensajes importados</div></div>';
+    '<div class="stat-card blue"><div class="stat-label">Feedback</div><div class="stat-value">' + fb.length + '</div><div class="stat-sub">' + (hasProfile ? 'tuyo: ' + p.myFeedback.length : 'items recibidos') + '</div></div>' +
+    '<div class="stat-card teal"><div class="stat-label">Discoveries</div><div class="stat-value">' + disc.length + '</div><div class="stat-sub">' + (hasProfile ? 'tuyas: ' + p.myDiscoveries.length : 'features y mejoras') + '</div></div>' +
+    '<div class="stat-card purple"><div class="stat-label">Companies</div><div class="stat-value">' + S.data.companies.length + '</div><div class="stat-sub">' + (hasProfile ? 'tuyas: ' + p.myCompanies.length : 'clientes registrados') + '</div></div>' +
+    '<div class="stat-card amber"><div class="stat-label">Messages</div><div class="stat-value">' + S.data.messages.length + '</div><div class="stat-sub">' + (hasProfile ? 'tuyos: ' + p.myMessages.length : 'mensajes importados') + '</div></div>';
 
   // Discoveries with most feedback (uses enriched feedback)
   const dm = {};
@@ -572,6 +801,21 @@ function renderDashboard() {
           '<div style="font-size:11.5px;color:var(--text-3);white-space:nowrap;">' + date + '</div></div>';
       }).join('')
     : '<div style="color:var(--text-3);font-size:13px;padding:12px 0;">Sin feedback disponible</div>';
+
+  // User profile quick link
+  let profileLinkEl = $('dash-profile-link');
+  if (!profileLinkEl) {
+    profileLinkEl = document.createElement('div');
+    profileLinkEl.id = 'dash-profile-link';
+    profileLinkEl.style.cssText = 'margin-top:16px;text-align:center;';
+    $('dash-ready').appendChild(profileLinkEl);
+  }
+  if (hasProfile) {
+    profileLinkEl.style.display = 'block';
+    profileLinkEl.innerHTML = '<button class="btn primary" onclick="navigate(\'profile\')" style="font-size:13px;padding:8px 20px;">Ver mi perfil completo (' + p.myFeedback.length + ' feedback, ' + p.myDiscoveries.length + ' discoveries) &rarr;</button>';
+  } else {
+    profileLinkEl.style.display = 'none';
+  }
 }
 
 // ── TABLES ──────────────────────────────────────

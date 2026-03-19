@@ -41,6 +41,10 @@
       <span class="nav-icon">&#9993;</span> <span translate="no">Messages</span>
       <span class="nav-badge" id="badge-messages">&mdash;</span>
     </div>
+    <div class="nav-item" onclick="navigate('profile')" id="nav-profile">
+      <span class="nav-icon">&#9787;</span> <span translate="no">Mi Perfil</span>
+      <span class="nav-badge" id="badge-profile">&mdash;</span>
+    </div>
   </div>
 
   <div class="sidebar-section" style="margin-top:auto;">
@@ -217,6 +221,21 @@
       <div class="card">
         <div id="msg-wrap"><div class="loading-wrap"><div class="spinner"></div></div></div>
       </div>
+    </div>
+
+    <!-- USER PROFILE -->
+    <div class="panel" id="panel-profile">
+      <div class="profile-header" id="profile-header"></div>
+      <div class="profile-tabs" id="profile-tabs">
+        <button class="profile-tab active" data-tab="pfb" onclick="switchProfileTab('pfb')">Feedback <span id="profile-fb-count" class="profile-tab-count">0</span></button>
+        <button class="profile-tab" data-tab="pdisc" onclick="switchProfileTab('pdisc')">Discoveries <span id="profile-disc-count" class="profile-tab-count">0</span></button>
+        <button class="profile-tab" data-tab="pcomp" onclick="switchProfileTab('pcomp')">Companies <span id="profile-comp-count" class="profile-tab-count">0</span></button>
+        <button class="profile-tab" data-tab="pmsg" onclick="switchProfileTab('pmsg')">Messages <span id="profile-msg-count" class="profile-tab-count">0</span></button>
+      </div>
+      <div class="profile-tab-content active" id="profile-tab-pfb"></div>
+      <div class="profile-tab-content" id="profile-tab-pdisc"></div>
+      <div class="profile-tab-content" id="profile-tab-pcomp"></div>
+      <div class="profile-tab-content" id="profile-tab-pmsg"></div>
     </div>
 
   </div>
