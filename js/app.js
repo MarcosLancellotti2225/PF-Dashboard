@@ -139,9 +139,20 @@ async function loadAll() {
 
   // Apply pre-query filters (client-side)
   if (S.filters.companyId) {
-    console.log('[FILTER] Filtering by company_id:', S.filters.companyId);
+    const compName = S.data.companies.find(c => String(c.id) === S.filters.companyId);
+    console.log('[FILTER] Company:', compName ? compName.name : S.filters.companyId);
     S.data.feedback = S.data.feedback.filter(f => fbMatchesCompany(f, S.filters.companyId));
-    console.log('[FILTER] Feedback after filter:', S.data.feedback.length);
+    console.log('[FILTER] Feedback after company filter:', S.data.feedback.length);
+  }
+  if (S.filters.userId) {
+    const userName = S.data.users.find(u => String(u.id) === S.filters.userId);
+    console.log('[FILTER] Teammate:', userName ? (userName.name || userName.email) : S.filters.userId);
+    // Filter discoveries by assignee
+    S.data.discoveries = S.data.discoveries.filter(d => {
+      const aId = d.assigneeId || d.assignee_id || (d.assignee && typeof d.assignee === 'object' ? String(d.assignee.id) : null);
+      return String(aId) === S.filters.userId;
+    });
+    console.log('[FILTER] Discoveries after teammate filter:', S.data.discoveries.length);
   }
 
   S.fil.feedback    = [...S.data.feedback];
@@ -174,7 +185,7 @@ async function testGateToken() {
     const userSel = $('gate-user');
     if (userSel) {
       const sorted = [...S.data.users].sort((a,b) => (a.name || a.email || '').localeCompare(b.name || b.email || ''));
-      userSel.innerHTML = '<option value="">-- Todos los usuarios --</option>' +
+      userSel.innerHTML = '<option value="">-- Todos los teammates --</option>' +
         sorted.map(u => '<option value="' + esc(String(u.id)) + '">' + esc(u.name || u.email || String(u.id)) + '</option>').join('');
     }
 
@@ -207,13 +218,26 @@ async function submitGate() {
   S.token = tk; S.userName = name;
   $('tokenDot').className = 'token-dot ok';
 
-  // Show active filter in token indicator
+  // Show active filter in token indicator and sidebar
   const filterInfo = [];
   if (S.filters.companyId) {
     const c = S.data.companies.find(c => String(c.id) === S.filters.companyId);
     if (c) filterInfo.push(c.name);
   }
-  $('tokenName').textContent = name + (filterInfo.length ? ' \u00b7 ' + filterInfo.join(', ') : '');
+  if (S.filters.userId) {
+    const u = S.data.users.find(u => String(u.id) === S.filters.userId);
+    if (u) filterInfo.push(u.name || u.email);
+  }
+  $('tokenName').textContent = name;
+  const afl = $('activeFilterLabel');
+  if (afl) {
+    if (filterInfo.length) {
+      afl.textContent = filterInfo.join(' \u00b7 ');
+      afl.style.display = 'block';
+    } else {
+      afl.style.display = 'none';
+    }
+  }
 
   showPanel('dashboard');
   navigate('dashboard', true);
@@ -260,6 +284,10 @@ function navigate(view, skipRender) {
   if (S.filters.companyId) {
     const c = S.data.companies.find(c => String(c.id) === S.filters.companyId);
     if (c) filterParts.push(c.name);
+  }
+  if (S.filters.userId) {
+    const u = S.data.users.find(u => String(u.id) === S.filters.userId);
+    if (u) filterParts.push(u.name || u.email);
   }
   $('topbarSub').textContent = filterParts.join(' \u00b7 ');
   $('topbarSep').style.display = filterParts.length ? 'inline' : 'none';
@@ -312,25 +340,33 @@ function renderDashboard() {
   const now = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' });
   $('report-meta').textContent = (S.userName ? S.userName + ' \u00b7 ' : '') + 'Generado el ' + now;
 
-  // Get selected company filter
-  const selComp = $('flt-dash-company') ? $('flt-dash-company').value : '';
-  const selCompany = selComp ? S.data.companies.find(c => String(c.id) === selComp) : null;
+  const fb = S.data.feedback;
+  const disc = S.data.discoveries;
 
-  // Filter feedback based on selected company
-  const fb = selComp ? S.data.feedback.filter(f => fbMatchesCompany(f, selComp)) : S.data.feedback;
-
-  // Debug: log company field structure from first feedback items
-  if (S.data.feedback.length && !renderDashboard._debugged) {
-    renderDashboard._debugged = true;
-    console.log('[DEBUG] Sample feedback company fields:', S.data.feedback.slice(0, 5).map(f => ({ id: f.id, company: f.company, companyId: f.companyId, company_id: f.company_id })));
-    console.log('[DEBUG] Sample companies:', S.data.companies.slice(0, 5).map(c => ({ id: c.id, name: c.name })));
+  // Show filter banner if active
+  const banner = $('dash-filter-banner');
+  const bannerParts = [];
+  if (S.filters.companyId) {
+    const c = S.data.companies.find(c => String(c.id) === S.filters.companyId);
+    if (c) bannerParts.push('Company: ' + c.name);
+  }
+  if (S.filters.userId) {
+    const u = S.data.users.find(u => String(u.id) === S.filters.userId);
+    if (u) bannerParts.push('Teammate: ' + (u.name || u.email));
+  }
+  if (banner) {
+    if (bannerParts.length) {
+      banner.style.display = 'flex';
+      banner.innerHTML = '<strong>Filtro activo:</strong> ' + bannerParts.map(esc).join(' &middot; ') +
+        ' <span style="margin-left:auto;font-size:12px;">' + fb.length + ' feedback &middot; ' + disc.length + ' discoveries</span>';
+    } else {
+      banner.style.display = 'none';
+    }
   }
 
-  const filterLabel = selCompany ? ' (' + selCompany.name + ')' : '';
-
   $('statsGrid').innerHTML =
-    '<div class="stat-card blue"><div class="stat-label">Feedback' + esc(filterLabel) + '</div><div class="stat-value">' + fb.length + '</div><div class="stat-sub">items recibidos</div></div>' +
-    '<div class="stat-card teal"><div class="stat-label">Discoveries</div><div class="stat-value">' + S.data.discoveries.length + '</div><div class="stat-sub">features y mejoras</div></div>' +
+    '<div class="stat-card blue"><div class="stat-label">Feedback</div><div class="stat-value">' + fb.length + '</div><div class="stat-sub">items recibidos</div></div>' +
+    '<div class="stat-card teal"><div class="stat-label">Discoveries</div><div class="stat-value">' + disc.length + '</div><div class="stat-sub">features y mejoras</div></div>' +
     '<div class="stat-card purple"><div class="stat-label">Companies</div><div class="stat-value">' + S.data.companies.length + '</div><div class="stat-sub">clientes registrados</div></div>' +
     '<div class="stat-card amber"><div class="stat-label">Messages</div><div class="stat-value">' + S.data.messages.length + '</div><div class="stat-sub">mensajes importados</div></div>';
 
@@ -350,7 +386,7 @@ function renderDashboard() {
 
   // Discovery states
   const sm = {};
-  S.data.discoveries.forEach(d => {
+  disc.forEach(d => {
     const s = d.state;
     const k = s ? (typeof s === 'object' ? s.name : s) : 'Sin estado';
     sm[k] = (sm[k] || 0) + 1;
@@ -360,21 +396,17 @@ function renderDashboard() {
     ? se.map(([n,c], i) => '<div class="state-row"><div class="state-name"><div class="state-dot" style="background:' + STATE_COLORS[i % STATE_COLORS.length] + '"></div>' + esc(n) + '</div><div class="state-count">' + c + '</div></div>').join('')
     : '<div style="color:var(--text-3);font-size:13px;">Sin discoveries</div>';
 
-  // Top companies by feedback (uses companyLabel for proper name resolution)
-  if (!selComp) {
-    const cm = {};
-    fb.forEach(f => {
-      const label = companyLabel(f.company);
-      if (label) cm[label] = (cm[label] || 0) + 1;
-    });
-    const tc = Object.entries(cm).sort((a,b) => b[1] - a[1]).slice(0, 8);
-    const mc = tc[0] ? tc[0][1] : 1;
-    $('chart-comp').innerHTML = tc.length
-      ? tc.map(([n,c]) => '<div class="bar-row"><div class="bar-label" title="' + esc(n) + '">' + esc(n) + '</div><div class="bar-track"><div class="bar-fill teal" style="width:' + ((c/mc)*100) + '%"></div></div><div class="bar-count">' + c + '</div></div>').join('')
-      : '<div style="color:var(--text-3);font-size:13px;">Sin datos de empresa en feedback</div>';
-  } else {
-    $('chart-comp').innerHTML = '<div style="padding:8px 0;font-size:13px;">Filtrando por: <strong>' + esc(selCompany.name) + '</strong> &mdash; ' + fb.length + ' feedback items</div>';
-  }
+  // Top companies by feedback
+  const cm = {};
+  fb.forEach(f => {
+    const label = companyLabel(f.company);
+    if (label) cm[label] = (cm[label] || 0) + 1;
+  });
+  const tc = Object.entries(cm).sort((a,b) => b[1] - a[1]).slice(0, 8);
+  const mc = tc[0] ? tc[0][1] : 1;
+  $('chart-comp').innerHTML = tc.length
+    ? tc.map(([n,c]) => '<div class="bar-row"><div class="bar-label" title="' + esc(n) + '">' + esc(n) + '</div><div class="bar-track"><div class="bar-fill teal" style="width:' + ((c/mc)*100) + '%"></div></div><div class="bar-count">' + c + '</div></div>').join('')
+    : '<div style="color:var(--text-3);font-size:13px;">Sin datos de empresa en feedback</div>';
 
   // Recent feedback (filtered)
   const recent = [...fb].sort((a,b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)).slice(0, 6);
@@ -388,7 +420,7 @@ function renderDashboard() {
           '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(title) + '</div><div style="font-size:12px;color:var(--text-3);margin-top:2px;">' + [company, disc].filter(Boolean).map(esc).join(' \u00b7 ') + '</div></div>' +
           '<div style="font-size:11.5px;color:var(--text-3);white-space:nowrap;">' + date + '</div></div>';
       }).join('')
-    : '<div style="color:var(--text-3);font-size:13px;padding:12px 0;">Sin feedback' + (selComp ? ' para esta company' : ' disponible') + '</div>';
+    : '<div style="color:var(--text-3);font-size:13px;padding:12px 0;">Sin feedback disponible</div>';
 }
 
 // ── TABLES ──────────────────────────────────────
@@ -628,14 +660,6 @@ function populateFilters() {
     discUserEl.innerHTML = '<option value="">Todos los assignees</option>' + [...assigneeMap.entries()].sort((a,b) => a[1].localeCompare(b[1])).map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
   }
 
-  // Dashboard company filter
-  const dashCompEl = $('flt-dash-company');
-  if (dashCompEl) {
-    const prev = dashCompEl.value;
-    const compNames = S.data.companies.map(c => ({ id: String(c.id || ''), name: c.name || '(sin nombre)' })).sort((a,b) => a.name.localeCompare(b.name));
-    dashCompEl.innerHTML = '<option value="">Todas las Companies</option>' + compNames.map(c => '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>').join('');
-    if (prev) dashCompEl.value = prev;
-  }
 }
 
 function applyFbFilters() {
@@ -745,6 +769,45 @@ function exportCSV() {
   a.download = fn + '-' + new Date().toISOString().slice(0, 10) + '.csv';
   a.click();
   toast('CSV descargado', 'success');
+}
+
+// ── DASHBOARD CSV EXPORT ─────────────────────────
+function exportDashboardCSV() {
+  // Export all filtered feedback + discoveries as a combined CSV
+  const fbRows = S.data.feedback.map(f => ({
+    type: 'feedback',
+    id: f.id || '',
+    title: f.title || f.name || '',
+    content: (f.content || f.description || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replace(/\n/g, ' ').slice(0, 500),
+    source: f.source || '',
+    company: f.company ? (typeof f.company === 'object' ? f.company.name : companyLabel(f.company)) : '',
+    discovery: f.discovery ? (typeof f.discovery === 'object' ? (f.discovery.name || f.discovery.title) : f.discovery) : '',
+    state: '',
+    assignee: '',
+    created_at: f.created_at || ''
+  }));
+  const discRows = S.data.discoveries.map(d => ({
+    type: 'discovery',
+    id: d.id || '',
+    title: d.name || d.title || '',
+    content: (d.description || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replace(/\n/g, ' ').slice(0, 500),
+    source: '',
+    company: '',
+    discovery: '',
+    state: d.state ? (typeof d.state === 'object' ? d.state.name : d.state) : '',
+    assignee: d.assignee ? (typeof d.assignee === 'object' ? (d.assignee.name || d.assignee.email) : d.assignee) : (userNameById(d.assigneeId || d.assignee_id) || ''),
+    created_at: d.created_at || d.updated_at || ''
+  }));
+  const rows = fbRows.concat(discRows);
+  if (!rows.length) { toast('Sin datos para exportar', 'error'); return; }
+  const keys = Object.keys(rows[0]);
+  const csv = [keys.join(','), ...rows.map(r => keys.map(k => '"' + String(r[k]).replace(/"/g, '""') + '"').join(','))].join('\n');
+  const a = document.createElement('a');
+  const filterSuffix = S.filters.companyId || S.filters.userId ? '-filtrado' : '';
+  a.href = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = 'harvestr-dashboard' + filterSuffix + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+  toast('Dashboard CSV descargado (' + rows.length + ' filas)', 'success');
 }
 
 // ── IMPORT USERS CSV ─────────────────────────────

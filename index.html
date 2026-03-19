@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -15,38 +15,38 @@
   <div class="sidebar-header">
     <div class="sidebar-logo-box">S</div>
     <div>
-      <div class="sidebar-brand-name">Signaturit</div>
-      <div class="sidebar-brand-sub">Professional Services</div>
+      <div class="sidebar-brand-name" translate="no">Signaturit</div>
+      <div class="sidebar-brand-sub" translate="no">Professional Services</div>
     </div>
   </div>
 
   <div class="sidebar-section">
-    <div class="sidebar-section-label">Harvestr</div>
+    <div class="sidebar-section-label" translate="no">Harvestr</div>
     <div class="nav-item active" onclick="navigate('dashboard')" id="nav-dashboard">
-      <span class="nav-icon">&#8862;</span> Dashboard
+      <span class="nav-icon">&#8862;</span> <span translate="no">Dashboard</span>
     </div>
     <div class="nav-item" onclick="navigate('feedback')" id="nav-feedback">
-      <span class="nav-icon">&#9678;</span> Feedback
+      <span class="nav-icon">&#9678;</span> <span translate="no">Feedback</span>
       <span class="nav-badge" id="badge-feedback">&mdash;</span>
     </div>
     <div class="nav-item" onclick="navigate('discoveries')" id="nav-discoveries">
-      <span class="nav-icon">&#9672;</span> Discoveries
+      <span class="nav-icon">&#9672;</span> <span translate="no">Discoveries</span>
       <span class="nav-badge" id="badge-discoveries">&mdash;</span>
     </div>
     <div class="nav-item" onclick="navigate('companies')" id="nav-companies">
-      <span class="nav-icon">&#9638;</span> Companies
+      <span class="nav-icon">&#9638;</span> <span translate="no">Companies</span>
       <span class="nav-badge" id="badge-companies">&mdash;</span>
     </div>
     <div class="nav-item" onclick="navigate('messages')" id="nav-messages">
-      <span class="nav-icon">&#9993;</span> Messages
+      <span class="nav-icon">&#9993;</span> <span translate="no">Messages</span>
       <span class="nav-badge" id="badge-messages">&mdash;</span>
     </div>
   </div>
 
   <div class="sidebar-section" style="margin-top:auto;">
-    <div class="sidebar-section-label">Navigation</div>
+    <div class="sidebar-section-label" translate="no">Navigation</div>
     <div class="nav-item" onclick="window.open('https://marcoslancellotti2225.github.io/PShome/','_blank')">
-      <span class="nav-icon">&#8598;</span> PS Home
+      <span class="nav-icon">&#8598;</span> <span translate="no">PS Home</span>
     </div>
   </div>
 
@@ -56,13 +56,14 @@
       <div class="token-name" id="tokenName">No token set</div>
       <button class="token-reset" onclick="resetToken()" title="Cambiar token">&#8634;</button>
     </div>
+    <div id="activeFilterLabel" style="display:none;font-size:11px;color:var(--text-3);padding:4px 16px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
   </div>
 </div>
 
 <!-- MAIN -->
 <div id="main">
   <div id="topbar">
-    <span class="topbar-title" id="topbarTitle">Dashboard</span>
+    <span class="topbar-title" id="topbarTitle" translate="no">Dashboard</span>
     <span class="topbar-sep" id="topbarSep" style="display:none;">&middot;</span>
     <span class="topbar-sub" id="topbarSub"></span>
     <div class="topbar-right">
@@ -84,16 +85,16 @@
       <div class="token-gate">
         <div id="gate-step1">
           <div class="token-gate-icon">&#128273;</div>
-          <h2>Harvestr Dashboard</h2>
-          <p>Introduce tu API token de Harvestr para cargar tu feedback, discoveries y datos de clientes. Todo queda en tu sesi&oacute;n &mdash; no se guarda ning&uacute;n dato en servidor.</p>
+          <h2 translate="no">Harvestr Dashboard</h2>
+          <p>Introduce tu API token de <span translate="no">Harvestr</span> para cargar tu feedback, discoveries y datos de clientes. Todo queda en tu sesi&oacute;n &mdash; no se guarda ning&uacute;n dato en servidor.</p>
           <div class="form-row">
             <label class="form-label">Tu nombre <span style="font-weight:400;color:#888;">(opcional)</span></label>
             <input class="form-input" id="gate-name" type="text" placeholder="Ej: Mar&iacute;a Garc&iacute;a" autocomplete="name">
           </div>
           <div class="form-row">
-            <label class="form-label">API Token de Harvestr</label>
+            <label class="form-label">API Token de <span translate="no">Harvestr</span></label>
             <input class="form-input" id="gate-token" type="password" placeholder="Pega aqu&iacute; tu token">
-            <div class="form-hint">Settings &rarr; Integrations &rarr; API en tu workspace de Harvestr.<br>Scopes necesarios: <strong>read_feedback &middot; read_discovery &middot; read_customer</strong></div>
+            <div class="form-hint"><span translate="no">Settings &rarr; Integrations &rarr; API</span> en tu workspace de <span translate="no">Harvestr</span>.<br>Scopes necesarios: <strong translate="no">read_feedback &middot; read_discovery &middot; read_customer</strong></div>
           </div>
           <div id="gate-result"></div>
           <div style="display:flex;gap:10px;margin-top:22px;">
@@ -102,17 +103,19 @@
         </div>
         <div id="gate-step2" style="display:none;">
           <div class="token-gate-icon">&#9881;</div>
-          <h2>Configurar Dashboard</h2>
-          <p id="gate-step2-info">Token v&aacute;lido. Seleccion&aacute; filtros opcionales antes de cargar los datos.</p>
+          <h2>Configurar vista</h2>
+          <p id="gate-step2-info" style="margin-bottom:16px;"></p>
+          <div style="font-size:13px;font-weight:600;margin-bottom:10px;">Elegí c&oacute;mo querés ver el dashboard:</div>
           <div class="form-row">
-            <label class="form-label">Company <span style="font-weight:400;color:#888;">(opcional)</span></label>
+            <label class="form-label"><span translate="no">Company</span> <span style="font-weight:400;color:#888;">(filtrar feedback por empresa)</span></label>
             <select class="form-input" id="gate-company"><option value="">-- Todas las companies --</option></select>
           </div>
           <div class="form-row">
-            <label class="form-label">Usuario <span style="font-weight:400;color:#888;">(opcional)</span></label>
-            <select class="form-input" id="gate-user"><option value="">-- Todos los usuarios --</option></select>
+            <label class="form-label"><span translate="no">Teammate</span> <span style="font-weight:400;color:#888;">(filtrar discoveries por assignee)</span></label>
+            <select class="form-input" id="gate-user"><option value="">-- Todos los teammates --</option></select>
           </div>
-          <div style="display:flex;gap:10px;margin-top:22px;">
+          <div class="form-hint" style="margin-bottom:12px;">Pod&eacute;s elegir uno, ambos o ninguno. Sin filtro se cargan todos los datos.</div>
+          <div style="display:flex;gap:10px;margin-top:16px;">
             <button class="btn" onclick="gateGoBack()" style="flex-shrink:0;">&larr; Volver</button>
             <button class="btn primary" onclick="submitGate()" id="gateSubmitBtn" style="flex:1;justify-content:center;">Entrar al Dashboard &rarr;</button>
           </div>
@@ -126,20 +129,21 @@
       <div id="dash-ready" style="display:none;">
         <div class="report-header">
           <div>
-            <div class="report-title">Dashboard de Feedback</div>
+            <div class="report-title" translate="no">Dashboard</div>
             <div class="report-meta" id="report-meta"></div>
           </div>
-          <button class="btn" onclick="window.print()">&#128424; Imprimir reporte</button>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <button class="btn" id="dashExportBtn" onclick="exportDashboardCSV()">&#8595; Exportar CSV</button>
+            <button class="btn" onclick="window.print()">&#128424; Imprimir</button>
+          </div>
         </div>
-        <div class="table-filters" style="margin-bottom:16px;">
-          <select class="filter-select" id="flt-dash-company" onchange="renderDashboard()"><option value="">Todas las Companies</option></select>
-        </div>
+        <div id="dash-filter-banner" style="display:none;margin-bottom:16px;padding:10px 14px;background:var(--primary);color:white;border-radius:var(--r);font-size:13px;display:flex;align-items:center;gap:8px;"></div>
         <div class="stats-grid" id="statsGrid"></div>
         <div class="dash-grid-3">
           <div class="card">
             <div class="card-header">
               <div>
-                <div class="card-title">Discoveries con m&aacute;s Feedback</div>
+                <div class="card-title" translate="no">Discoveries con m&aacute;s Feedback</div>
                 <div class="card-sub">Top features por cantidad de feedback recibido</div>
               </div>
             </div>
@@ -148,7 +152,7 @@
           <div class="card">
             <div class="card-header">
               <div>
-                <div class="card-title">Estado de Discoveries</div>
+                <div class="card-title">Estado de <span translate="no">Discoveries</span></div>
                 <div class="card-sub">Distribuci&oacute;n por estado actual</div>
               </div>
             </div>
@@ -157,12 +161,12 @@
         </div>
         <div class="dash-grid">
           <div class="card">
-            <div class="card-header"><div class="card-title">Top Companies por Feedback</div></div>
+            <div class="card-header"><div class="card-title">Top <span translate="no">Companies</span> por <span translate="no">Feedback</span></div></div>
             <div class="card-body"><div class="bar-list" id="chart-comp"></div></div>
           </div>
           <div class="card">
             <div class="card-header">
-              <div class="card-title">Feedback Reciente</div>
+              <div class="card-title"><span translate="no">Feedback</span> Reciente</div>
               <div class="card-header-right"><button class="btn" style="font-size:12px;padding:5px 10px;" onclick="navigate('feedback')">Ver todo &rarr;</button></div>
             </div>
             <div id="recent-list" style="padding:4px 18px 12px;"></div>
