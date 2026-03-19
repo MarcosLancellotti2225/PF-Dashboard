@@ -322,6 +322,18 @@ td { padding: 12px 18px; vertical-align: middle; }
 .field-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--text-3); margin-bottom: 5px; }
 .field-value { font-size: 13.5px; color: var(--text-1); line-height: 1.6; }
 .field-value.muted { color: var(--text-2); }
+.field-value.rich-content { max-height: 400px; overflow-y: auto; padding: 12px 14px; background: var(--main-bg); border: 1px solid var(--border); border-radius: 6px; }
+.field-value.rich-content h1, .field-value.rich-content h2, .field-value.rich-content h3 { font-size: 14px; font-weight: 600; margin: 12px 0 6px; color: var(--text-1); }
+.field-value.rich-content h1:first-child, .field-value.rich-content h2:first-child, .field-value.rich-content h3:first-child { margin-top: 0; }
+.field-value.rich-content p { margin: 6px 0; }
+.field-value.rich-content ul, .field-value.rich-content ol { margin: 6px 0; padding-left: 20px; }
+.field-value.rich-content li { margin: 3px 0; }
+.field-value.rich-content strong { font-weight: 600; }
+.field-value.rich-content br { display: block; content: ""; margin-top: 4px; }
+.field-value.rich-content table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12.5px; }
+.field-value.rich-content table td, .field-value.rich-content table th { border: 1px solid var(--border); padding: 6px 8px; text-align: left; }
+.field-value.rich-content table th { background: var(--card-bg); font-weight: 600; }
+.field-value.rich-content a { color: var(--primary); text-decoration: underline; }
 .field-value pre {
   font-size: 11.5px; background: var(--main-bg); border: 1px solid var(--border);
   border-radius: 6px; padding: 10px 12px; overflow-x: auto; color: var(--text-2);
