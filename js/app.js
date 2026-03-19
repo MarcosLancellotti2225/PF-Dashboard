@@ -89,30 +89,51 @@ function safe(v) {
   return [];
 }
 
-// Paginated fetch: keeps requesting pages until all items are loaded
-async function apiAllPages(path, tk) {
+// Paginated fetch using offset-based pagination (Harvestr uses next_offset in pageInfos)
+async function apiAllPages(path, tk, maxItems) {
+  maxItems = maxItems || 5000;
   let all = [];
-  let page = 1;
-  const maxPages = 50; // safety limit
-  // Extract per_page from path to know the expected page size
+  let offset = 0;
   const ppMatch = path.match(/per_page=(\d+)/);
-  const perPage = ppMatch ? parseInt(ppMatch[1]) : 25;
-  while (page <= maxPages) {
+  const perPage = ppMatch ? parseInt(ppMatch[1]) : 100;
+  const maxRequests = Math.ceil(maxItems / perPage) + 1;
+
+  for (let req = 0; req < maxRequests; req++) {
     const sep = path.includes('?') ? '&' : '?';
-    const res = await api(path + sep + 'page=' + page, tk);
+    const url = path + sep + 'offset=' + offset;
+
+    // Fetch with retry on 429
+    let res;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        res = await api(url, tk);
+        break;
+      } catch (e) {
+        if (e.message && e.message.includes('429') && attempt < 3) {
+          const wait = Math.pow(2, attempt + 1) * 1000; // 2s, 4s, 8s
+          console.log('[RATE-LIMIT] 429 on ' + path + ', waiting ' + (wait/1000) + 's...');
+          await new Promise(r => setTimeout(r, wait));
+          continue;
+        }
+        throw e;
+      }
+    }
+
     const items = safe(res);
     all = all.concat(items);
-    // Check pageInfos for total pages (try all known field names)
     const pi = res && res.pageInfos;
-    const totalPages = pi ? (pi.totalPages || pi.total_pages || pi.lastPage || pi.last_page || pi.pages || 0) : 0;
-    if (page === 1 && pi) console.log('[PAGE-INFO] ' + path + ' pageInfos:', JSON.stringify(pi));
-    console.log('[PAGE] ' + path + ' page=' + page + '/' + (totalPages || '?') + ' got=' + items.length + ' total=' + all.length);
-    // Stop conditions: no items, or we know totalPages and reached it, or got less than a full page
+    if (req === 0 && pi) console.log('[PAGE-INFO] ' + path + ' pageInfos:', JSON.stringify(pi));
+    console.log('[PAGE] ' + path + ' offset=' + offset + ' got=' + items.length + ' total=' + all.length);
+
+    // Stop conditions
     if (!items.length) break;
-    if (totalPages > 0 && page >= totalPages) break;
-    if (totalPages === 0 && items.length < perPage) break; // got less than full page = last page
-    // If we got a full page and don't know totalPages, keep going
-    page++;
+    if (all.length >= maxItems) break;
+    if (pi && pi.next_offset != null) {
+      offset = pi.next_offset;
+    } else {
+      // No next_offset = last page
+      break;
+    }
   }
   return all;
 }
@@ -184,20 +205,21 @@ async function testGateToken() {
     S._gateUser = me;
     console.log('[GATE] Found user:', me);
 
-    // Step 3: Load all users, companies, discoveries, messages, feedback, states in parallel
-    setBtnLoading('gateTestBtn', true, 'Cargando toda la data...');
-    const [usersR, companiesR, discoveriesR, messagesR, feedbackR] = await Promise.allSettled([
-      apiAllPages('/user?per_page=100', tk),
-      apiAllPages('/company?per_page=100', tk),
-      apiAllPages('/discovery?per_page=100', tk),
-      apiAllPages('/message?per_page=100', tk),
-      apiAllPages('/feedback?per_page=100', tk)
-    ]);
-    S.data.users = usersR.status === 'fulfilled' ? usersR.value : [];
-    S.data.companies = companiesR.status === 'fulfilled' ? companiesR.value : [];
-    S.data.discoveries = discoveriesR.status === 'fulfilled' ? discoveriesR.value : [];
-    S.data.messages = messagesR.status === 'fulfilled' ? messagesR.value : [];
-    S.data.feedback = feedbackR.status === 'fulfilled' ? feedbackR.value : [];
+    // Step 3: Load all data SEQUENTIALLY to avoid rate limiting
+    setBtnLoading('gateTestBtn', true, 'Cargando usuarios...');
+    try { S.data.users = await apiAllPages('/user?per_page=100', tk); } catch(e) { console.warn('[LOAD] users failed:', e.message); S.data.users = []; }
+
+    setBtnLoading('gateTestBtn', true, 'Cargando companies...');
+    try { S.data.companies = await apiAllPages('/company?per_page=100', tk); } catch(e) { console.warn('[LOAD] companies failed:', e.message); S.data.companies = []; }
+
+    setBtnLoading('gateTestBtn', true, 'Cargando discoveries...');
+    try { S.data.discoveries = await apiAllPages('/discovery?per_page=100', tk); } catch(e) { console.warn('[LOAD] discoveries failed:', e.message); S.data.discoveries = []; }
+
+    setBtnLoading('gateTestBtn', true, 'Cargando messages...');
+    try { S.data.messages = await apiAllPages('/message?per_page=100', tk); } catch(e) { console.warn('[LOAD] messages failed:', e.message); S.data.messages = []; }
+
+    setBtnLoading('gateTestBtn', true, 'Cargando feedback...');
+    try { S.data.feedback = await apiAllPages('/feedback?per_page=100', tk); } catch(e) { console.warn('[LOAD] feedback failed:', e.message); S.data.feedback = []; }
 
     // Load discovery states
     try {
@@ -289,27 +311,49 @@ async function testGateToken() {
     if (S.data.discoveries.length) console.log('[XREF-DEBUG] First discovery keys:', Object.keys(S.data.discoveries[0]), 'assigneeId:', S.data.discoveries[0].assigneeId);
     console.log('[XREF-DEBUG] me.id:', me.id, 'type:', typeof me.id);
 
-    // Messages where this user is requester or submitter
+    // Messages where this user is requester, submitter, OR assignee (COLLABORATOR users are assignees)
     const myMessages = S.data.messages.filter(m =>
-      myUserIds.has(String(m.requesterId || '')) || myUserIds.has(String(m.submitterId || ''))
+      myUserIds.has(String(m.requesterId || '')) ||
+      myUserIds.has(String(m.submitterId || '')) ||
+      myUserIds.has(String(m.assigneeId || ''))
     );
     const myMessageIds = new Set(myMessages.map(m => String(m.id)));
-    console.log('[XREF] My messages:', myMessages.length);
+    console.log('[XREF] My messages:', myMessages.length, '(requester/submitter/assignee)');
     if (!myMessages.length && S.data.messages.length) {
-      // Debug: show sample requesterId/submitterId to understand format
-      const sample = S.data.messages.slice(0, 3).map(m => ({ requesterId: m.requesterId, submitterId: m.submitterId }));
-      console.log('[XREF-DEBUG] No messages matched. Sample requesterId/submitterId:', sample, 'looking for IDs:', [...myUserIds]);
+      const sample = S.data.messages.slice(0, 3).map(m => ({ requesterId: m.requesterId, submitterId: m.submitterId, assigneeId: m.assigneeId }));
+      console.log('[XREF-DEBUG] No messages matched. Sample:', sample, 'looking for IDs:', [...myUserIds]);
     }
-
-    // Feedback linked to my messages (messageId matches)
-    const myFeedback = S.data.feedback.filter(f => myMessageIds.has(String(f.messageId || '')));
-    console.log('[XREF] My feedback (via messages):', myFeedback.length);
 
     // Discoveries where user is assignee
     const myDiscAssigned = S.data.discoveries.filter(d => myUserIds.has(String(d.assigneeId || '')));
-    // Discoveries linked via my feedback (discoveryId from feedback)
+    console.log('[XREF] Discoveries assigned to me:', myDiscAssigned.length);
+
+    // Feedback linked to my messages (messageId matches)
+    const myFeedbackViaMsg = S.data.feedback.filter(f => myMessageIds.has(String(f.messageId || '')));
+    console.log('[XREF] My feedback via messages:', myFeedbackViaMsg.length);
+
+    // Feedback linked to my assigned discoveries (discoveryId matches)
+    const myDiscIds = new Set(myDiscAssigned.map(d => String(d.id)));
+    const myFeedbackViaDisc = S.data.feedback.filter(f =>
+      f.discoveryId && myDiscIds.has(String(f.discoveryId)) &&
+      !myMessageIds.has(String(f.messageId || '')) // avoid duplicates
+    );
+    console.log('[XREF] My feedback via assigned discoveries:', myFeedbackViaDisc.length);
+
+    // Combine all feedback (deduplicated)
+    const seenFbIds = new Set();
+    const myFeedback = [];
+    [...myFeedbackViaMsg, ...myFeedbackViaDisc].forEach(f => {
+      const fId = String(f.id);
+      if (!seenFbIds.has(fId)) { seenFbIds.add(fId); myFeedback.push(f); }
+    });
+    console.log('[XREF] My total feedback:', myFeedback.length);
+
+    // Discoveries linked via my feedback (discoveryId from feedback items not already in assigned)
     const myDiscFbIds = new Set(myFeedback.map(f => String(f.discoveryId || '')).filter(Boolean));
-    const myDiscViaFb = S.data.discoveries.filter(d => myDiscFbIds.has(String(d.id)) && !myUserIds.has(String(d.assigneeId || '')));
+    const myDiscViaFb = S.data.discoveries.filter(d =>
+      myDiscFbIds.has(String(d.id)) && !myDiscIds.has(String(d.id))
+    );
     const myDiscoveries = [...myDiscAssigned, ...myDiscViaFb];
     console.log('[XREF] My discoveries: assigned=' + myDiscAssigned.length + ' via feedback=' + myDiscViaFb.length + ' total=' + myDiscoveries.length);
 
@@ -318,6 +362,13 @@ async function testGateToken() {
     matchingUsers.forEach(u => { if (u.companyId) myCompanyIds.add(String(u.companyId)); });
     // Also companies from feedback chain (requester's company)
     myFeedback.forEach(f => { if (f._companyId) myCompanyIds.add(f._companyId); });
+    // Also companies from messages' requesters
+    myMessages.forEach(m => {
+      if (m.requesterId) {
+        const req = userMap.get(String(m.requesterId));
+        if (req && req.companyId) myCompanyIds.add(String(req.companyId));
+      }
+    });
     const myCompanies = S.data.companies.filter(c => myCompanyIds.has(String(c.id)));
     console.log('[XREF] My companies:', myCompanies.length, myCompanies.map(c => c.name));
 
@@ -1257,19 +1308,17 @@ async function refreshData() {
   if (!S.token) { navigate('token'); return; }
   setBtnLoading('refreshBtn', true, '\u21ba Cargando...');
   try {
-    // Re-fetch all data from API
-    const [feedbackR, discR, compR, msgR, usersR] = await Promise.allSettled([
-      apiAllPages('/feedback?per_page=100'),
-      apiAllPages('/discovery?per_page=100'),
-      apiAllPages('/company?per_page=100'),
-      apiAllPages('/message?per_page=100'),
-      apiAllPages('/user?per_page=100')
-    ]);
-    S.data.feedback = feedbackR.status === 'fulfilled' ? feedbackR.value : S.data.feedback;
-    S.data.discoveries = discR.status === 'fulfilled' ? discR.value : S.data.discoveries;
-    S.data.companies = compR.status === 'fulfilled' ? compR.value : S.data.companies;
-    S.data.messages = msgR.status === 'fulfilled' ? msgR.value : S.data.messages;
-    S.data.users = usersR.status === 'fulfilled' ? usersR.value : S.data.users;
+    // Re-fetch all data from API (sequentially to avoid rate limiting)
+    setBtnLoading('refreshBtn', true, '↻ Usuarios...');
+    try { S.data.users = await apiAllPages('/user?per_page=100'); } catch(e) { console.warn('[REFRESH] users:', e.message); }
+    setBtnLoading('refreshBtn', true, '↻ Companies...');
+    try { S.data.companies = await apiAllPages('/company?per_page=100'); } catch(e) { console.warn('[REFRESH] companies:', e.message); }
+    setBtnLoading('refreshBtn', true, '↻ Discoveries...');
+    try { S.data.discoveries = await apiAllPages('/discovery?per_page=100'); } catch(e) { console.warn('[REFRESH] discoveries:', e.message); }
+    setBtnLoading('refreshBtn', true, '↻ Messages...');
+    try { S.data.messages = await apiAllPages('/message?per_page=100'); } catch(e) { console.warn('[REFRESH] messages:', e.message); }
+    setBtnLoading('refreshBtn', true, '↻ Feedback...');
+    try { S.data.feedback = await apiAllPages('/feedback?per_page=100'); } catch(e) { console.warn('[REFRESH] feedback:', e.message); }
 
     // Re-enrich feedback
     const msgMap = new Map();
