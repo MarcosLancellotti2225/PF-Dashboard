@@ -142,14 +142,14 @@ async function loadAll() {
 async function testGateToken() {
   const tk = $('gate-token').value.trim();
   if (!tk) { toast('Introduce un token', 'error'); return; }
-  setBtnLoading('gateTestBtn', true, 'Cargando...');
+  setBtnLoading('gateTestBtn', true, 'Conectando...');
   const el = $('gate-result');
   try {
     // Validate token and preload companies + users for filter selectors
     await api('/feedback?limit=1', tk);
     await loadCompaniesAndUsers(tk);
 
-    // Populate filter selectors in the gate
+    // Populate filter selectors
     const compSel = $('gate-company');
     if (compSel) {
       const sorted = [...S.data.companies].sort((a,b) => (a.name || '').localeCompare(b.name || ''));
@@ -163,14 +163,19 @@ async function testGateToken() {
         sorted.map(u => '<option value="' + esc(String(u.id)) + '">' + esc(u.name || u.email || String(u.id)) + '</option>').join('');
     }
 
-    // Show the filter step
-    $('gate-filters').style.display = 'block';
-    el.innerHTML = '<div class="alert success">\u2713 Token v\u00e1lido \u2014 ' + S.data.companies.length + ' companies, ' + S.data.users.length + ' users cargados</div>';
+    // Switch to step 2
+    $('gate-step1').style.display = 'none';
+    $('gate-step2').style.display = 'block';
+    $('gate-step2-info').textContent = '\u2713 Token v\u00e1lido \u2014 ' + S.data.companies.length + ' companies, ' + S.data.users.length + ' users encontrados.';
   } catch (e) {
     el.innerHTML = '<div class="alert error">\u2717 ' + esc(e.message) + '</div>';
-    $('gate-filters').style.display = 'none';
   }
-  setBtnLoading('gateTestBtn', false, 'Probar token');
+  setBtnLoading('gateTestBtn', false, 'Conectar \u2192');
+}
+
+function gateGoBack() {
+  $('gate-step1').style.display = 'block';
+  $('gate-step2').style.display = 'none';
 }
 
 async function submitGate() {
@@ -215,9 +220,9 @@ function resetToken() {
   S.fil  = { feedback: [], discoveries: [], companies: [] };
   $('tokenDot').className = 'token-dot';
   $('tokenName').textContent = 'No token set';
-  $('gate-filters').style.display = 'none';
-  const compSel = $('gate-company'); if (compSel) compSel.innerHTML = '<option value="">-- Todas las companies --</option>';
-  const userSel = $('gate-user'); if (userSel) userSel.innerHTML = '<option value="">-- Todos los usuarios --</option>';
+  $('gate-step1').style.display = 'block';
+  $('gate-step2').style.display = 'none';
+  $('gate-result').innerHTML = '';
   renderDashboard._debugged = false;
   updateBadges();
   navigate('token');
