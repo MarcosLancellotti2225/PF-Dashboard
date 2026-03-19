@@ -75,60 +75,73 @@ function safe(v) {
   return [];
 }
 
+// Paginated fetch: keeps requesting pages until all items are loaded
+async function apiAllPages(path, tk) {
+  let all = [];
+  let page = 1;
+  const maxPages = 50; // safety limit
+  while (page <= maxPages) {
+    const sep = path.includes('?') ? '&' : '?';
+    const res = await api(path + sep + 'page=' + page, tk);
+    const items = safe(res);
+    all = all.concat(items);
+    // Check pageInfos for total pages
+    const pi = res && res.pageInfos;
+    const totalPages = pi ? (pi.totalPages || pi.total_pages || pi.lastPage || pi.last_page || 0) : 0;
+    console.log('[PAGE] ' + path + ' page=' + page + '/' + (totalPages || '?') + ' got=' + items.length + ' total=' + all.length);
+    if (!items.length || page >= totalPages) break;
+    page++;
+  }
+  return all;
+}
+
 // Load only companies and users (lightweight, for the filter step)
 async function loadCompaniesAndUsers(tk) {
   tk = tk || S.token;
   const rs = await Promise.allSettled([
-    api('/company?limit=200', tk),
-    api('/user?per_page=100', tk)
+    apiAllPages('/company?per_page=100', tk),
+    apiAllPages('/user?per_page=100', tk)
   ]);
-  S.data.companies = safe(rs[0].status === 'fulfilled' ? rs[0].value : []);
-  S.data.users = safe(rs[1].status === 'fulfilled' ? rs[1].value : []);
+  S.data.companies = rs[0].status === 'fulfilled' ? rs[0].value : [];
+  S.data.users = rs[1].status === 'fulfilled' ? rs[1].value : [];
   console.log('[PRELOAD] companies:', S.data.companies.length, 'users:', S.data.users.length);
 }
 
 async function loadAll() {
-  // Build query params based on active filters
-  const qp = [];
-  if (S.filters.companyId) qp.push('company_id=' + encodeURIComponent(S.filters.companyId));
+  const loadingText = $('dash-loading-text');
+  if (loadingText) loadingText.textContent = 'Cargando todas las p\u00e1ginas de Harvestr...';
 
-  const fbParams = 'limit=200' + (qp.length ? '&' + qp.join('&') : '');
-  const discParams = 'limit=200';
-  const compParams = 'limit=200';
-  const msgParams = 'limit=100';
+  // Fetch all pages for each endpoint
+  const rs = await Promise.allSettled([
+    apiAllPages('/feedback?per_page=100'),
+    apiAllPages('/discovery?per_page=100'),
+    apiAllPages('/company?per_page=100'),
+    apiAllPages('/message?per_page=100')
+  ]);
 
-  const endpoints = [
-    '/feedback?' + fbParams,
-    '/discovery?' + discParams,
-    '/company?' + compParams,
-    '/message?' + msgParams
-  ];
-  const rs = await Promise.allSettled(endpoints.map(e => api(e)));
-
-  // Debug: log raw responses to console
-  endpoints.forEach((ep, i) => {
-    const raw = rs[i].status === 'fulfilled' ? rs[i].value : rs[i].reason;
-    console.log(`[API] ${ep}`, rs[i].status, raw);
-  });
-
-  S.data.feedback    = safe(rs[0].status === 'fulfilled' ? rs[0].value : []);
-  S.data.discoveries = safe(rs[1].status === 'fulfilled' ? rs[1].value : []);
-  S.data.companies   = safe(rs[2].status === 'fulfilled' ? rs[2].value : []);
-  S.data.messages    = safe(rs[3].status === 'fulfilled' ? rs[3].value : []);
+  S.data.feedback    = rs[0].status === 'fulfilled' ? rs[0].value : [];
+  S.data.discoveries = rs[1].status === 'fulfilled' ? rs[1].value : [];
+  S.data.companies   = rs[2].status === 'fulfilled' ? rs[2].value : [];
+  S.data.messages    = rs[3].status === 'fulfilled' ? rs[3].value : [];
 
   console.log('[DATA] feedback:', S.data.feedback.length, 'discoveries:', S.data.discoveries.length, 'companies:', S.data.companies.length, 'messages:', S.data.messages.length);
-  if (S.filters.companyId) console.log('[FILTER] company_id:', S.filters.companyId);
 
   // Users (requires read_user scope — may fail if token lacks it)
   if (!S.data.users.length) {
     try {
-      const uRes = await api('/user?per_page=100');
-      console.log('[API] /user', uRes);
-      S.data.users = safe(uRes);
+      S.data.users = await apiAllPages('/user?per_page=100');
+      console.log('[DATA] users:', S.data.users.length);
     } catch (e) {
       S.data.users = [];
       console.warn('Could not load users (needs read_user scope):', e.message);
     }
+  }
+
+  // Apply pre-query filters (client-side)
+  if (S.filters.companyId) {
+    console.log('[FILTER] Filtering by company_id:', S.filters.companyId);
+    S.data.feedback = S.data.feedback.filter(f => fbMatchesCompany(f, S.filters.companyId));
+    console.log('[FILTER] Feedback after filter:', S.data.feedback.length);
   }
 
   S.fil.feedback    = [...S.data.feedback];
@@ -145,8 +158,10 @@ async function testGateToken() {
   setBtnLoading('gateTestBtn', true, 'Conectando...');
   const el = $('gate-result');
   try {
-    // Validate token and preload companies + users for filter selectors
-    await api('/feedback?limit=1', tk);
+    // Validate token
+    await api('/feedback?per_page=1', tk);
+    // Preload all companies + users for filter selectors (paginated)
+    setBtnLoading('gateTestBtn', true, 'Cargando companies...');
     await loadCompaniesAndUsers(tk);
 
     // Populate filter selectors
