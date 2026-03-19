@@ -99,99 +99,35 @@ async function apiAllPages(path, tk) {
   return all;
 }
 
-// Load only companies and users (lightweight, for the filter step)
-async function loadCompaniesAndUsers(tk) {
-  tk = tk || S.token;
-  const rs = await Promise.allSettled([
-    apiAllPages('/company?per_page=100', tk),
-    apiAllPages('/user?per_page=100', tk)
-  ]);
-  S.data.companies = rs[0].status === 'fulfilled' ? rs[0].value : [];
-  S.data.users = rs[1].status === 'fulfilled' ? rs[1].value : [];
-  console.log('[PRELOAD] companies:', S.data.companies.length, 'users:', S.data.users.length);
-}
 
 async function loadAll() {
-  const loadingText = $('dash-loading-text');
-  if (loadingText) loadingText.textContent = 'Cargando todas las p\u00e1ginas de Harvestr...';
+  // Data is already loaded and enriched in testGateToken
+  // Here we just apply filters from the gate selectors and prepare filtered views
 
-  // Fetch all pages for each endpoint (reuse preloaded discoveries if available)
-  const hasPreloaded = S._preloadedDiscoveries && S._preloadedDiscoveries.length;
-  const rs = await Promise.allSettled([
-    apiAllPages('/feedback?per_page=100'),
-    hasPreloaded ? Promise.resolve(S._preloadedDiscoveries) : apiAllPages('/discovery?per_page=100'),
-    apiAllPages('/company?per_page=100'),
-    apiAllPages('/message?per_page=100')
-  ]);
-  delete S._preloadedDiscoveries;
+  console.log('[LOAD] Data already loaded. feedback:', S.data.feedback.length, 'discoveries:', S.data.discoveries.length, 'companies:', S.data.companies.length);
 
-  S.data.feedback    = rs[0].status === 'fulfilled' ? rs[0].value : [];
-  S.data.discoveries = rs[1].status === 'fulfilled' ? rs[1].value : [];
-  S.data.companies   = rs[2].status === 'fulfilled' ? rs[2].value : [];
-  S.data.messages    = rs[3].status === 'fulfilled' ? rs[3].value : [];
-
-  console.log('[DATA] feedback:', S.data.feedback.length, 'discoveries:', S.data.discoveries.length, 'companies:', S.data.companies.length, 'messages:', S.data.messages.length);
-
-  // Users (requires read_user scope — may fail if token lacks it)
-  if (!S.data.users.length) {
-    try {
-      S.data.users = await apiAllPages('/user?per_page=100');
-      console.log('[DATA] users:', S.data.users.length);
-    } catch (e) {
-      S.data.users = [];
-      console.warn('Could not load users (needs read_user scope):', e.message);
-    }
-  }
-
-  // Build lookup maps for resolving references
-  const msgMap = new Map();
-  S.data.messages.forEach(m => msgMap.set(String(m.id), m));
-  const discMap = new Map();
-  S.data.discoveries.forEach(d => discMap.set(String(d.id), d));
-  const compMap = new Map();
-  S.data.companies.forEach(c => compMap.set(String(c.id), c));
-  const userMap = new Map();
-  S.data.users.forEach(u => userMap.set(String(u.id), u));
-
-  // Enrich feedback items by resolving messageId → message, discoveryId → discovery
-  // Harvestr feedback has: id, messageId, discoveryId, score, starred, selections[]
-  // We need to resolve these to get title, content, source, company, discovery name
-  S.data.feedback = S.data.feedback.map(f => {
-    const msg = f.messageId ? msgMap.get(String(f.messageId)) : null;
-    const disc = f.discoveryId ? discMap.get(String(f.discoveryId)) : null;
-    const requester = msg && msg.requesterId ? userMap.get(String(msg.requesterId)) : null;
-    const company = requester && requester.companyId ? compMap.get(String(requester.companyId)) : null;
-    const selectionText = (f.selections || []).map(s => s.content || '').join(' ').trim();
-    return {
-      ...f,
-      // Resolved display fields
-      _title: msg ? (msg.title || selectionText || '(sin título)') : (selectionText || '(sin título)'),
-      _content: selectionText || (msg ? msg.content : '') || '',
-      _source: msg ? (msg.channel || '') : '',
-      _company: company || null,
-      _companyId: company ? String(company.id) : (requester ? String(requester.companyId || '') : ''),
-      _companyName: company ? company.name : '',
-      _discovery: disc || null,
-      _discoveryName: disc ? (disc.title || disc.name || '') : '',
-      _discoveryId: f.discoveryId || '',
-      _requester: requester || null,
-      _requesterName: requester ? (requester.name || requester.email || '') : '',
-      _date: f.createdAt || (msg ? msg.createdAt : '') || ''
+  // Keep a copy of unfiltered data for reference
+  if (!S._allData) {
+    S._allData = {
+      feedback: [...S.data.feedback],
+      discoveries: [...S.data.discoveries]
     };
-  });
-
-  console.log('[ENRICHED] First feedback:', S.data.feedback.length ? S.data.feedback[0] : 'none');
+  } else {
+    // Restore from unfiltered copy (in case of refresh with different filters)
+    S.data.feedback = [...S._allData.feedback];
+    S.data.discoveries = [...S._allData.discoveries];
+  }
 
   // Apply pre-query filters (client-side)
   if (S.filters.companyId) {
-    const comp = compMap.get(S.filters.companyId);
+    const comp = S.data.companies.find(c => String(c.id) === S.filters.companyId);
     console.log('[FILTER] Company:', comp ? comp.name : S.filters.companyId);
     S.data.feedback = S.data.feedback.filter(f => f._companyId === S.filters.companyId);
     console.log('[FILTER] Feedback after company filter:', S.data.feedback.length);
   }
   if (S.filters.userId) {
-    const user = userMap.get(S.filters.userId);
-    console.log('[FILTER] Teammate:', user ? (user.name || user.email) : S.filters.userId);
+    const u = userNameById(S.filters.userId);
+    console.log('[FILTER] Teammate:', u || S.filters.userId);
     S.data.discoveries = S.data.discoveries.filter(d =>
       String(d.assigneeId || '') === S.filters.userId
     );
@@ -208,52 +144,160 @@ async function loadAll() {
 // ── GATE ────────────────────────────────────────
 async function testGateToken() {
   const tk = $('gate-token').value.trim();
+  const email = $('gate-email').value.trim();
   if (!tk) { toast('Introduce un token', 'error'); return; }
+  if (!email) { toast('Introduce tu email', 'error'); return; }
   setBtnLoading('gateTestBtn', true, 'Conectando...');
   const el = $('gate-result');
   try {
-    // Validate token
+    // Step 1: Validate token
     await api('/feedback?per_page=1', tk);
-    // Preload all companies + users for filter selectors (paginated)
-    setBtnLoading('gateTestBtn', true, 'Cargando companies...');
-    await loadCompaniesAndUsers(tk);
 
-    // Populate filter selectors
-    const compSel = $('gate-company');
-    if (compSel) {
-      const sorted = [...S.data.companies].sort((a,b) => (a.name || '').localeCompare(b.name || ''));
-      compSel.innerHTML = '<option value="">-- Todas las companies --</option>' +
-        sorted.map(c => '<option value="' + esc(String(c.id)) + '">' + esc(c.name || '(sin nombre)') + '</option>').join('');
+    // Step 2: Find user by email
+    setBtnLoading('gateTestBtn', true, 'Buscando usuario...');
+    const userRes = await api('/user?email=' + encodeURIComponent(email), tk);
+    const userList = safe(userRes);
+    const me = userList.find(u => (u.email || '').toLowerCase() === email.toLowerCase());
+    if (!me) {
+      el.innerHTML = '<div class="alert error">\u2717 No se encontr\u00f3 usuario con email: ' + esc(email) + '</div>';
+      setBtnLoading('gateTestBtn', false, 'Conectar \u2192');
+      return;
     }
-    // Also preload discoveries to extract assignees (teammates)
-    setBtnLoading('gateTestBtn', true, 'Cargando discoveries...');
-    const discRs = await apiAllPages('/discovery?per_page=100', tk);
-    S._preloadedDiscoveries = discRs;
+    S._gateUser = me;
+    console.log('[GATE] Found user:', me);
 
-    // Try to load discovery states for labeling
+    // Step 3: Load all users, companies, discoveries, messages, feedback, states in parallel
+    setBtnLoading('gateTestBtn', true, 'Cargando toda la data...');
+    const [usersR, companiesR, discoveriesR, messagesR, feedbackR] = await Promise.allSettled([
+      apiAllPages('/user?per_page=100', tk),
+      apiAllPages('/company?per_page=100', tk),
+      apiAllPages('/discovery?per_page=100', tk),
+      apiAllPages('/message?per_page=100', tk),
+      apiAllPages('/feedback?per_page=100', tk)
+    ]);
+    S.data.users = usersR.status === 'fulfilled' ? usersR.value : [];
+    S.data.companies = companiesR.status === 'fulfilled' ? companiesR.value : [];
+    S.data.discoveries = discoveriesR.status === 'fulfilled' ? discoveriesR.value : [];
+    S.data.messages = messagesR.status === 'fulfilled' ? messagesR.value : [];
+    S.data.feedback = feedbackR.status === 'fulfilled' ? feedbackR.value : [];
+
+    // Load discovery states
     try {
       const statesRs = await api('/discoverystate?per_page=100', tk);
       const states = safe(statesRs);
       S._stateMap = new Map();
       states.forEach(s => S._stateMap.set(String(s.id), s.name || s.title || String(s.id)));
-      console.log('[PRELOAD] discovery states:', S._stateMap.size, [...S._stateMap.values()]);
+      console.log('[PRELOAD] discovery states:', S._stateMap.size);
     } catch (e) {
-      console.warn('Could not load discovery states:', e.message);
       S._stateMap = new Map();
     }
 
-    // Extract unique assignees from discoveries (these are the real teammates)
+    // Step 4: Cross-reference data
+    // Find all users with same clientId (teammates in same workspace)
+    const myClientId = me.clientId;
+
+    // Build lookup maps
+    const userMap = new Map();
+    S.data.users.forEach(u => userMap.set(String(u.id), u));
+    const compMap = new Map();
+    S.data.companies.forEach(c => compMap.set(String(c.id), c));
+    const msgMap = new Map();
+    S.data.messages.forEach(m => msgMap.set(String(m.id), m));
+    const discMap = new Map();
+    S.data.discoveries.forEach(d => discMap.set(String(d.id), d));
+
+    // Find my companies: the user's own companyId, plus companies of users I manage
+    const myCompanyIds = new Set();
+    if (me.companyId) myCompanyIds.add(String(me.companyId));
+
+    // Find collaborators (type=COLLABORATOR) vs customers
+    const collaborators = S.data.users.filter(u => u.type === 'COLLABORATOR');
+    const customers = S.data.users.filter(u => u.type === 'CUSTOMER' || u.type === 'COMPANY_DEFAULT');
+
+    // Find all companies that have users
+    customers.forEach(u => {
+      if (u.companyId) myCompanyIds.add(String(u.companyId));
+    });
+
+    // Enrich feedback with resolved references
+    S.data.feedback = S.data.feedback.map(f => {
+      const msg = f.messageId ? msgMap.get(String(f.messageId)) : null;
+      const disc = f.discoveryId ? discMap.get(String(f.discoveryId)) : null;
+      const requester = msg && msg.requesterId ? userMap.get(String(msg.requesterId)) : null;
+      const submitter = msg && msg.submitterId ? userMap.get(String(msg.submitterId)) : null;
+      const company = requester && requester.companyId ? compMap.get(String(requester.companyId)) : null;
+      const selectionText = (f.selections || []).map(s => s.content || '').join(' ').trim();
+      return {
+        ...f,
+        _title: msg ? (msg.title || selectionText || '(sin t\u00edtulo)') : (selectionText || '(sin t\u00edtulo)'),
+        _content: selectionText || (msg ? msg.content : '') || '',
+        _source: msg ? (msg.channel || '') : '',
+        _company: company || null,
+        _companyId: company ? String(company.id) : (requester ? String(requester.companyId || '') : ''),
+        _companyName: company ? company.name : '',
+        _discovery: disc || null,
+        _discoveryName: disc ? (disc.title || '') : '',
+        _discoveryId: f.discoveryId || '',
+        _requester: requester || null,
+        _requesterName: requester ? (requester.name || requester.email || '') : '',
+        _submitter: submitter || null,
+        _submitterName: submitter ? (submitter.name || submitter.email || '') : '',
+        _date: f.createdAt || (msg ? msg.createdAt : '') || ''
+      };
+    });
+
+    S._preloadedDiscoveries = S.data.discoveries;
+
+    // Store cross-referenced data for export
+    S._crossedData = {
+      user: me,
+      collaborators: collaborators.map(u => ({ id: u.id, name: u.name, email: u.email, type: u.type })),
+      companies: S.data.companies.map(c => ({
+        id: c.id, name: c.name, segments: (c.segments || []).map(s => s.name),
+        userCount: customers.filter(u => String(u.companyId) === String(c.id)).length,
+        feedbackCount: S.data.feedback.filter(f => f._companyId === String(c.id)).length
+      })),
+      discoveries: S.data.discoveries.map(d => ({
+        id: d.id, title: d.title, description: (d.description || '').replace(/<[^>]+>/g, ' ').slice(0, 300),
+        state: S._stateMap.get(String(d.discoveryStateId)) || d.discoveryStateId || '',
+        assignee: d.assigneeId ? (userNameById(d.assigneeId) || d.assigneeId) : '',
+        feedbackCount: S.data.feedback.filter(f => String(f.discoveryId) === String(d.id)).length,
+        tags: d.tags || []
+      })),
+      feedback: S.data.feedback.map(f => ({
+        id: f.id, title: f._title, content: (f._content || '').replace(/<[^>]+>/g, ' ').slice(0, 300),
+        channel: f._source, company: f._companyName, discovery: f._discoveryName,
+        requester: f._requesterName, submitter: f._submitterName,
+        score: f.score, starred: f.starred, date: f._date
+      })),
+      messages: S.data.messages.map(m => ({
+        id: m.id, title: m.title, channel: m.channel,
+        requester: m.requesterId ? (userNameById(m.requesterId) || m.requesterId) : '',
+        date: m.createdAt
+      }))
+    };
+
+    // Populate company filter
+    const compSel = $('gate-company');
+    if (compSel) {
+      const sorted = [...S.data.companies].sort((a,b) => (a.name || '').localeCompare(b.name || ''));
+      compSel.innerHTML = '<option value="">-- Todas las companies --</option>' +
+        sorted.map(c => {
+          const fbC = S.data.feedback.filter(f => f._companyId === String(c.id)).length;
+          return '<option value="' + esc(String(c.id)) + '">' + esc(c.name || '(sin nombre)') + ' (' + fbC + ' fb)</option>';
+        }).join('');
+    }
+
+    // Populate teammate filter from discovery assignees
     const teammateMap = new Map();
-    discRs.forEach(d => {
+    S.data.discoveries.forEach(d => {
       if (d.assigneeId) {
-        const user = S.data.users.find(u => String(u.id) === String(d.assigneeId));
+        const user = userMap.get(String(d.assigneeId));
         if (!teammateMap.has(String(d.assigneeId))) {
           teammateMap.set(String(d.assigneeId), user ? (user.name || user.email) : ('User ' + String(d.assigneeId).slice(0, 8)));
         }
       }
     });
-    console.log('[PRELOAD] teammates found in discoveries:', teammateMap.size, [...teammateMap.values()]);
-
     const userSel = $('gate-user');
     if (userSel) {
       const sorted = [...teammateMap.entries()].sort((a,b) => a[1].localeCompare(b[1]));
@@ -261,14 +305,71 @@ async function testGateToken() {
         sorted.map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
     }
 
+    // Show summary
+    const summary = $('gate-summary');
+    if (summary) {
+      const compWithFb = S.data.companies.filter(c => S.data.feedback.some(f => f._companyId === String(c.id)));
+      summary.innerHTML =
+        '<div style="background:var(--bg-2);border-radius:var(--r);padding:14px;font-size:13px;line-height:1.7;">' +
+        '<div><strong>Usuario:</strong> ' + esc(me.name || '') + ' &lt;' + esc(me.email || '') + '&gt; <span class="tag gray">' + esc(me.type || '') + '</span></div>' +
+        '<div><strong>Collaborators:</strong> ' + collaborators.length + ' &nbsp; <strong>Customers:</strong> ' + customers.length + '</div>' +
+        '<div><strong>Companies:</strong> ' + S.data.companies.length + ' total, ' + compWithFb.length + ' con feedback</div>' +
+        '<div><strong>Feedback:</strong> ' + S.data.feedback.length + ' &nbsp; <strong>Discoveries:</strong> ' + S.data.discoveries.length + ' &nbsp; <strong>Messages:</strong> ' + S.data.messages.length + '</div>' +
+        '<div><strong>Teammates (assignees):</strong> ' + teammateMap.size + '</div>' +
+        '</div>';
+    }
+
     // Switch to step 2
     $('gate-step1').style.display = 'none';
     $('gate-step2').style.display = 'block';
-    $('gate-step2-info').textContent = '\u2713 Token v\u00e1lido \u2014 ' + S.data.companies.length + ' companies, ' + teammateMap.size + ' teammates encontrados.';
+    $('gate-step2-info').innerHTML = '<span style="color:var(--green);">\u2713</span> Token v\u00e1lido &mdash; Data cargada y cruzada.';
   } catch (e) {
     el.innerHTML = '<div class="alert error">\u2717 ' + esc(e.message) + '</div>';
   }
   setBtnLoading('gateTestBtn', false, 'Conectar \u2192');
+}
+
+// Download crossed data as JSON
+function downloadCrossedJSON() {
+  if (!S._crossedData) { toast('No hay data cruzada', 'error'); return; }
+  const json = JSON.stringify(S._crossedData, null, 2);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+  a.download = 'harvestr-crossed-' + new Date().toISOString().slice(0, 10) + '.json';
+  a.click();
+  toast('JSON descargado', 'success');
+}
+
+// Download crossed data as CSV (feedback + discoveries combined)
+function downloadCrossedCSV() {
+  if (!S._crossedData) { toast('No hay data cruzada', 'error'); return; }
+  const rows = [];
+  S._crossedData.feedback.forEach(f => {
+    rows.push({
+      type: 'feedback', id: f.id, title: f.title, content: (f.content || '').replace(/"/g, "'"),
+      channel: f.channel, company: f.company, discovery: f.discovery,
+      requester: f.requester, submitter: f.submitter,
+      score: f.score !== undefined ? f.score : '', starred: f.starred ? 'Y' : '',
+      state: '', assignee: '', tags: '', date: f.date
+    });
+  });
+  S._crossedData.discoveries.forEach(d => {
+    rows.push({
+      type: 'discovery', id: d.id, title: d.title, content: (d.description || '').replace(/"/g, "'"),
+      channel: '', company: '', discovery: '',
+      requester: '', submitter: '',
+      score: '', starred: '',
+      state: d.state, assignee: d.assignee, tags: (d.tags || []).join('; '), date: ''
+    });
+  });
+  if (!rows.length) { toast('Sin datos', 'error'); return; }
+  const keys = Object.keys(rows[0]);
+  const csv = [keys.join(','), ...rows.map(r => keys.map(k => '"' + String(r[k] || '').replace(/"/g, '""') + '"').join(','))].join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = 'harvestr-crossed-' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+  toast('CSV descargado (' + rows.length + ' filas)', 'success');
 }
 
 function gateGoBack() {
@@ -277,7 +378,7 @@ function gateGoBack() {
 }
 
 async function submitGate() {
-  const name = $('gate-name').value.trim() || 'CSM';
+  const name = S._gateUser ? (S._gateUser.name || S._gateUser.email || 'CSM') : 'CSM';
   const tk = $('gate-token').value.trim();
   if (!tk) { toast('Introduce tu API token', 'error'); return; }
 
@@ -293,12 +394,12 @@ async function submitGate() {
   // Show active filter in token indicator and sidebar
   const filterInfo = [];
   if (S.filters.companyId) {
-    const c = S.data.companies.find(c => String(c.id) === S.filters.companyId);
+    const c = S.data.companies.find(x => String(x.id) === S.filters.companyId);
     if (c) filterInfo.push(c.name);
   }
   if (S.filters.userId) {
-    const u = S.data.users.find(u => String(u.id) === S.filters.userId);
-    if (u) filterInfo.push(u.name || u.email);
+    const u = userNameById(S.filters.userId);
+    if (u) filterInfo.push(u);
   }
   $('tokenName').textContent = name;
   const afl = $('activeFilterLabel');
@@ -329,12 +430,12 @@ function resetToken() {
   S.filters = { companyId: '', userId: '' };
   S.data = { feedback: [], discoveries: [], companies: [], messages: [], users: [] };
   S.fil  = { feedback: [], discoveries: [], companies: [] };
+  S._allData = null; S._crossedData = null; S._gateUser = null; S._stateMap = null;
   $('tokenDot').className = 'token-dot';
   $('tokenName').textContent = 'No token set';
   $('gate-step1').style.display = 'block';
   $('gate-step2').style.display = 'none';
   $('gate-result').innerHTML = '';
-  renderDashboard._debugged = false;
   updateBadges();
   navigate('token');
 }
@@ -750,6 +851,49 @@ async function refreshData() {
   if (!S.token) { navigate('token'); return; }
   setBtnLoading('refreshBtn', true, '\u21ba Cargando...');
   try {
+    // Re-fetch all data from API
+    const [feedbackR, discR, compR, msgR, usersR] = await Promise.allSettled([
+      apiAllPages('/feedback?per_page=100'),
+      apiAllPages('/discovery?per_page=100'),
+      apiAllPages('/company?per_page=100'),
+      apiAllPages('/message?per_page=100'),
+      apiAllPages('/user?per_page=100')
+    ]);
+    S.data.feedback = feedbackR.status === 'fulfilled' ? feedbackR.value : S.data.feedback;
+    S.data.discoveries = discR.status === 'fulfilled' ? discR.value : S.data.discoveries;
+    S.data.companies = compR.status === 'fulfilled' ? compR.value : S.data.companies;
+    S.data.messages = msgR.status === 'fulfilled' ? msgR.value : S.data.messages;
+    S.data.users = usersR.status === 'fulfilled' ? usersR.value : S.data.users;
+
+    // Re-enrich feedback
+    const msgMap = new Map();
+    S.data.messages.forEach(m => msgMap.set(String(m.id), m));
+    const discMap = new Map();
+    S.data.discoveries.forEach(d => discMap.set(String(d.id), d));
+    const compMap = new Map();
+    S.data.companies.forEach(c => compMap.set(String(c.id), c));
+    const userMap = new Map();
+    S.data.users.forEach(u => userMap.set(String(u.id), u));
+
+    S.data.feedback = S.data.feedback.map(f => {
+      const msg = f.messageId ? msgMap.get(String(f.messageId)) : null;
+      const disc = f.discoveryId ? discMap.get(String(f.discoveryId)) : null;
+      const requester = msg && msg.requesterId ? userMap.get(String(msg.requesterId)) : null;
+      const company = requester && requester.companyId ? compMap.get(String(requester.companyId)) : null;
+      const selectionText = (f.selections || []).map(s => s.content || '').join(' ').trim();
+      return { ...f,
+        _title: msg ? (msg.title || selectionText || '(sin t\u00edtulo)') : (selectionText || '(sin t\u00edtulo)'),
+        _content: selectionText || (msg ? msg.content : '') || '',
+        _source: msg ? (msg.channel || '') : '',
+        _companyId: company ? String(company.id) : (requester ? String(requester.companyId || '') : ''),
+        _companyName: company ? company.name : '',
+        _discoveryName: disc ? (disc.title || '') : '',
+        _discoveryId: f.discoveryId || '',
+        _requesterName: requester ? (requester.name || requester.email || '') : '',
+        _date: f.createdAt || (msg ? msg.createdAt : '') || ''
+      };
+    });
+    S._allData = { feedback: [...S.data.feedback], discoveries: [...S.data.discoveries] };
     await loadAll();
     navigate(S.view);
     toast('Datos actualizados', 'success');
@@ -921,5 +1065,5 @@ function importUsersCSV(input) {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeDrawer();
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); $('globalSearch').focus(); }
-  if (e.key === 'Enter' && document.activeElement === $('gate-token')) testGateToken();
+  if (e.key === 'Enter' && (document.activeElement === $('gate-token') || document.activeElement === $('gate-email'))) testGateToken();
 });

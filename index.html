@@ -86,15 +86,16 @@
         <div id="gate-step1">
           <div class="token-gate-icon">&#128273;</div>
           <h2 translate="no">Harvestr Dashboard</h2>
-          <p>Introduce tu API token de <span translate="no">Harvestr</span> para cargar tu feedback, discoveries y datos de clientes. Todo queda en tu sesi&oacute;n &mdash; no se guarda ning&uacute;n dato en servidor.</p>
-          <div class="form-row">
-            <label class="form-label">Tu nombre <span style="font-weight:400;color:#888;">(opcional)</span></label>
-            <input class="form-input" id="gate-name" type="text" placeholder="Ej: Mar&iacute;a Garc&iacute;a" autocomplete="name">
-          </div>
+          <p>Introduce tu API token y tu email para cargar y cruzar tu feedback, discoveries y datos de clientes.</p>
           <div class="form-row">
             <label class="form-label">API Token de <span translate="no">Harvestr</span></label>
             <input class="form-input" id="gate-token" type="password" placeholder="Pega aqu&iacute; tu token">
-            <div class="form-hint"><span translate="no">Settings &rarr; Integrations &rarr; API</span> en tu workspace de <span translate="no">Harvestr</span>.<br>Scopes necesarios: <strong translate="no">read_feedback &middot; read_discovery &middot; read_customer</strong></div>
+            <div class="form-hint"><span translate="no">Settings &rarr; Integrations &rarr; API</span> en tu workspace de <span translate="no">Harvestr</span>.</div>
+          </div>
+          <div class="form-row">
+            <label class="form-label">Tu email en <span translate="no">Harvestr</span></label>
+            <input class="form-input" id="gate-email" type="email" placeholder="Ej: maria@signaturit.com" autocomplete="email">
+            <div class="form-hint">Se usa para buscar tu usuario y filtrar por tus companies y feedback asociado.</div>
           </div>
           <div id="gate-result"></div>
           <div style="display:flex;gap:10px;margin-top:22px;">
@@ -103,9 +104,10 @@
         </div>
         <div id="gate-step2" style="display:none;">
           <div class="token-gate-icon">&#9881;</div>
-          <h2>Configurar vista</h2>
+          <h2>Generador &mdash; Data cruzada</h2>
           <p id="gate-step2-info" style="margin-bottom:16px;"></p>
-          <div style="font-size:13px;font-weight:600;margin-bottom:10px;">Elegí c&oacute;mo querés ver el dashboard:</div>
+          <div id="gate-summary" style="margin-bottom:16px;"></div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:10px;">Filtrar vista del dashboard:</div>
           <div class="form-row">
             <label class="form-label"><span translate="no">Company</span> <span style="font-weight:400;color:#888;">(filtrar feedback por empresa)</span></label>
             <select class="form-input" id="gate-company"><option value="">-- Todas las companies --</option></select>
@@ -114,9 +116,10 @@
             <label class="form-label"><span translate="no">Teammate</span> <span style="font-weight:400;color:#888;">(filtrar discoveries por assignee)</span></label>
             <select class="form-input" id="gate-user"><option value="">-- Todos los teammates --</option></select>
           </div>
-          <div class="form-hint" style="margin-bottom:12px;">Pod&eacute;s elegir uno, ambos o ninguno. Sin filtro se cargan todos los datos.</div>
-          <div style="display:flex;gap:10px;margin-top:16px;">
+          <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
             <button class="btn" onclick="gateGoBack()" style="flex-shrink:0;">&larr; Volver</button>
+            <button class="btn" onclick="downloadCrossedJSON()" id="gateJsonBtn" style="flex-shrink:0;">&#8595; Descargar JSON</button>
+            <button class="btn" onclick="downloadCrossedCSV()" id="gateCsvBtn" style="flex-shrink:0;">&#8595; Descargar CSV</button>
             <button class="btn primary" onclick="submitGate()" id="gateSubmitBtn" style="flex:1;justify-content:center;">Entrar al Dashboard &rarr;</button>
           </div>
         </div>
