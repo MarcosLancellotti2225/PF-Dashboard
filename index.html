@@ -82,34 +82,38 @@
     <!-- TOKEN GATE -->
     <div class="panel active" id="panel-token">
       <div class="token-gate">
-        <div class="token-gate-icon">&#128273;</div>
-        <h2>Harvestr Dashboard</h2>
-        <p>Introduce tu API token de Harvestr para cargar tu feedback, discoveries y datos de clientes. Todo queda en tu sesi&oacute;n &mdash; no se guarda ning&uacute;n dato en servidor.</p>
-        <div class="form-row">
-          <label class="form-label">Tu nombre <span style="font-weight:400;color:#888;">(opcional)</span></label>
-          <input class="form-input" id="gate-name" type="text" placeholder="Ej: Mar&iacute;a Garc&iacute;a" autocomplete="name">
-        </div>
-        <div class="form-row">
-          <label class="form-label">API Token de Harvestr</label>
-          <input class="form-input" id="gate-token" type="password" placeholder="Pega aqu&iacute; tu token">
-          <div class="form-hint">Settings &rarr; Integrations &rarr; API en tu workspace de Harvestr.<br>Scopes necesarios: <strong>read_feedback &middot; read_discovery &middot; read_customer</strong></div>
-        </div>
-        <div id="gate-result"></div>
-        <div style="display:flex;gap:10px;margin-top:22px;">
-          <button class="btn primary" onclick="testGateToken()" id="gateTestBtn" style="flex:1;justify-content:center;">Conectar y cargar filtros</button>
-        </div>
-        <div id="gate-filters" style="display:none;margin-top:20px;border-top:1px solid var(--border);padding-top:18px;">
-          <div style="font-size:13px;font-weight:600;margin-bottom:12px;">Filtros pre-carga <span style="font-weight:400;color:#888;">(opcional)</span></div>
-          <p style="font-size:12px;color:var(--text-3);margin-bottom:12px;">Seleccion&aacute; una company o usuario para que las peticiones a la API ya vengan filtradas. Si no seleccion&aacute;s nada, se cargan todos los datos.</p>
+        <div id="gate-step1">
+          <div class="token-gate-icon">&#128273;</div>
+          <h2>Harvestr Dashboard</h2>
+          <p>Introduce tu API token de Harvestr para cargar tu feedback, discoveries y datos de clientes. Todo queda en tu sesi&oacute;n &mdash; no se guarda ning&uacute;n dato en servidor.</p>
           <div class="form-row">
-            <label class="form-label">Company</label>
+            <label class="form-label">Tu nombre <span style="font-weight:400;color:#888;">(opcional)</span></label>
+            <input class="form-input" id="gate-name" type="text" placeholder="Ej: Mar&iacute;a Garc&iacute;a" autocomplete="name">
+          </div>
+          <div class="form-row">
+            <label class="form-label">API Token de Harvestr</label>
+            <input class="form-input" id="gate-token" type="password" placeholder="Pega aqu&iacute; tu token">
+            <div class="form-hint">Settings &rarr; Integrations &rarr; API en tu workspace de Harvestr.<br>Scopes necesarios: <strong>read_feedback &middot; read_discovery &middot; read_customer</strong></div>
+          </div>
+          <div id="gate-result"></div>
+          <div style="display:flex;gap:10px;margin-top:22px;">
+            <button class="btn primary" onclick="testGateToken()" id="gateTestBtn" style="flex:1;justify-content:center;">Conectar &rarr;</button>
+          </div>
+        </div>
+        <div id="gate-step2" style="display:none;">
+          <div class="token-gate-icon">&#9881;</div>
+          <h2>Configurar Dashboard</h2>
+          <p id="gate-step2-info">Token v&aacute;lido. Seleccion&aacute; filtros opcionales antes de cargar los datos.</p>
+          <div class="form-row">
+            <label class="form-label">Company <span style="font-weight:400;color:#888;">(opcional)</span></label>
             <select class="form-input" id="gate-company"><option value="">-- Todas las companies --</option></select>
           </div>
           <div class="form-row">
-            <label class="form-label">Usuario</label>
+            <label class="form-label">Usuario <span style="font-weight:400;color:#888;">(opcional)</span></label>
             <select class="form-input" id="gate-user"><option value="">-- Todos los usuarios --</option></select>
           </div>
-          <div style="display:flex;gap:10px;margin-top:16px;">
+          <div style="display:flex;gap:10px;margin-top:22px;">
+            <button class="btn" onclick="gateGoBack()" style="flex-shrink:0;">&larr; Volver</button>
             <button class="btn primary" onclick="submitGate()" id="gateSubmitBtn" style="flex:1;justify-content:center;">Entrar al Dashboard &rarr;</button>
           </div>
         </div>
@@ -118,7 +122,7 @@
 
     <!-- DASHBOARD -->
     <div class="panel" id="panel-dashboard">
-      <div id="dash-loading" class="loading-wrap"><div class="spinner"></div> Cargando datos de Harvestr...</div>
+      <div id="dash-loading" class="loading-wrap"><div class="spinner"></div> <span id="dash-loading-text">Cargando datos de Harvestr...</span></div>
       <div id="dash-ready" style="display:none;">
         <div class="report-header">
           <div>
