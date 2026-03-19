@@ -206,11 +206,9 @@ async function testGateToken() {
     console.log('[GATE] Found user:', me);
 
     // Step 3: Load all data SEQUENTIALLY to avoid rate limiting
-    setBtnLoading('gateTestBtn', true, 'Cargando usuarios...');
-    try { S.data.users = await apiAllPages('/user?per_page=100', tk); } catch(e) { console.warn('[LOAD] users failed:', e.message); S.data.users = []; }
-
-    setBtnLoading('gateTestBtn', true, 'Cargando companies...');
-    try { S.data.companies = await apiAllPages('/company?per_page=100', tk); } catch(e) { console.warn('[LOAD] companies failed:', e.message); S.data.companies = []; }
+    // Feedback and discoveries first (most important), then supporting data
+    setBtnLoading('gateTestBtn', true, 'Cargando feedback...');
+    try { S.data.feedback = await apiAllPages('/feedback?per_page=100', tk); } catch(e) { console.warn('[LOAD] feedback failed:', e.message); S.data.feedback = []; }
 
     setBtnLoading('gateTestBtn', true, 'Cargando discoveries...');
     try { S.data.discoveries = await apiAllPages('/discovery?per_page=100', tk); } catch(e) { console.warn('[LOAD] discoveries failed:', e.message); S.data.discoveries = []; }
@@ -218,18 +216,47 @@ async function testGateToken() {
     setBtnLoading('gateTestBtn', true, 'Cargando messages...');
     try { S.data.messages = await apiAllPages('/message?per_page=100', tk); } catch(e) { console.warn('[LOAD] messages failed:', e.message); S.data.messages = []; }
 
-    setBtnLoading('gateTestBtn', true, 'Cargando feedback...');
-    try { S.data.feedback = await apiAllPages('/feedback?per_page=100', tk); } catch(e) { console.warn('[LOAD] feedback failed:', e.message); S.data.feedback = []; }
+    setBtnLoading('gateTestBtn', true, 'Cargando usuarios...');
+    try { S.data.users = await apiAllPages('/user?per_page=100', tk); } catch(e) { console.warn('[LOAD] users failed:', e.message); S.data.users = []; }
 
-    // Load discovery states
-    try {
-      const statesRs = await api('/discoverystate?per_page=100', tk);
-      const states = safe(statesRs);
-      S._stateMap = new Map();
-      states.forEach(s => S._stateMap.set(String(s.id), s.name || s.title || String(s.id)));
-      console.log('[PRELOAD] discovery states:', S._stateMap.size);
-    } catch (e) {
-      S._stateMap = new Map();
+    setBtnLoading('gateTestBtn', true, 'Cargando companies...');
+    try { S.data.companies = await apiAllPages('/company?per_page=100', tk); } catch(e) { console.warn('[LOAD] companies failed:', e.message); S.data.companies = []; }
+
+    // Load discovery states — try multiple endpoint variants
+    S._stateMap = new Map();
+    const stateEndpoints = ['/discoverystate?per_page=100', '/discoveryState?per_page=100', '/discovery_state?per_page=100', '/discovery-state?per_page=100'];
+    for (const ep of stateEndpoints) {
+      try {
+        const statesRs = await api(ep, tk);
+        const states = safe(statesRs);
+        if (states.length) {
+          states.forEach(s => S._stateMap.set(String(s.id), s.name || s.title || String(s.id)));
+          console.log('[PRELOAD] discovery states from ' + ep + ':', S._stateMap.size, [...S._stateMap.values()]);
+          break;
+        }
+      } catch (e) {
+        console.log('[PRELOAD] ' + ep + ' failed:', e.message);
+      }
+    }
+    // Fallback: extract state info from discoveries that have a stateName or state field
+    if (!S._stateMap.size && S.data.discoveries.length) {
+      S.data.discoveries.forEach(d => {
+        if (d.discoveryStateId && (d.stateName || d.state)) {
+          S._stateMap.set(String(d.discoveryStateId), d.stateName || d.state);
+        }
+      });
+      if (S._stateMap.size) console.log('[PRELOAD] states from discovery fields:', S._stateMap.size, [...S._stateMap.values()]);
+    }
+    // Debug: log unique discoveryStateId values
+    if (S.data.discoveries.length) {
+      const uniqueStates = new Map();
+      S.data.discoveries.forEach(d => {
+        if (d.discoveryStateId && !uniqueStates.has(String(d.discoveryStateId))) {
+          uniqueStates.set(String(d.discoveryStateId), S._stateMap.get(String(d.discoveryStateId)) || '(unknown)');
+        }
+      });
+      console.log('[STATES] Unique discoveryStateIds:', [...uniqueStates.entries()]);
+      console.log('[STATES] First discovery all keys:', Object.keys(S.data.discoveries[0]));
     }
 
     // Step 4: Cross-reference data
@@ -478,10 +505,17 @@ async function testGateToken() {
         (myCompanies.length ? '<div style="margin-left:auto;display:flex;gap:4px;flex-wrap:wrap;">' + myCompanies.map(c => '<span class="tag purple">' + esc(c.name) + '</span>').join('') + '</div>' : '') +
       '</div>';
 
+      // Count roadmap discoveries (check state name for "roadmap" keyword)
+      const roadmapDisc = myDiscoveries.filter(d => {
+        const sn = d.discoveryStateId ? (S._stateMap && S._stateMap.get(String(d.discoveryStateId))) || '' : '';
+        return sn.toLowerCase().includes('roadmap');
+      });
+
       // Tabs-like sections
       html += '<div style="display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap;">' +
         '<div style="background:var(--blue-dim);color:var(--blue);padding:6px 12px;border-radius:6px;font-size:12.5px;font-weight:600;">Feedback: ' + myFeedback.length + '</div>' +
         '<div style="background:var(--teal-dim);color:var(--teal);padding:6px 12px;border-radius:6px;font-size:12.5px;font-weight:600;">Discoveries: ' + myDiscoveries.length + '</div>' +
+        (roadmapDisc.length ? '<div style="background:#dcfce7;color:#16a34a;padding:6px 12px;border-radius:6px;font-size:12.5px;font-weight:600;">En Roadmap: ' + roadmapDisc.length + '</div>' : '') +
         '<div style="background:var(--purple-dim);color:var(--purple);padding:6px 12px;border-radius:6px;font-size:12.5px;font-weight:600;">Companies: ' + myCompanies.length + '</div>' +
         '<div style="background:var(--amber-dim);color:var(--amber);padding:6px 12px;border-radius:6px;font-size:12.5px;font-weight:600;">Messages: ' + myMessages.length + '</div>' +
       '</div>';
@@ -506,20 +540,28 @@ async function testGateToken() {
         });
       }
 
-      // Discoveries detail
+      // Discoveries detail — roadmap first, then rest
       if (sortedDisc.length) {
-        html += '<div style="font-size:13px;font-weight:600;color:var(--text-1);margin:12px 0 8px;border-top:1px solid var(--border);padding-top:12px;">Discoveries (' + sortedDisc.length + ')</div>';
-        sortedDisc.forEach(d => {
+        // Separate roadmap vs other, show roadmap section first
+        const discWithState = sortedDisc.map(d => {
+          const sn = d.discoveryStateId ? (S._stateMap && S._stateMap.get(String(d.discoveryStateId))) || '' : '';
+          return { ...d, _stateName: sn, _isRoadmap: sn.toLowerCase().includes('roadmap') };
+        });
+        const roadmapItems = discWithState.filter(d => d._isRoadmap);
+        const otherItems = discWithState.filter(d => !d._isRoadmap);
+
+        function renderDiscItem(d, highlight) {
           const title = d.title || d.name || '(sin nombre)';
-          const stateName = d.discoveryStateId ? (S._stateMap && S._stateMap.get(String(d.discoveryStateId))) || '' : '';
-          const badgeClass = stateBadgeClass(stateName);
+          const badgeClass = stateBadgeClass(d._stateName);
           const updated = d.updatedAt ? new Date(d.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase() : '';
           const fbCount = S.data.feedback.filter(f => String(f.discoveryId) === String(d.id)).length;
           const isAssigned = myUserIds.has(String(d.assigneeId || ''));
-          html += '<div style="padding:8px 10px;margin-bottom:4px;background:white;border-radius:6px;border-left:3px solid var(--teal);">' +
+          const bg = highlight ? '#f0fdf4' : 'white';
+          const border = highlight ? '#22c55e' : 'var(--teal)';
+          return '<div style="padding:8px 10px;margin-bottom:4px;background:' + bg + ';border-radius:6px;border-left:3px solid ' + border + ';">' +
             '<div style="font-size:13px;font-weight:500;color:var(--text-1);display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
               esc(title) +
-              (stateName ? ' <span class="state-badge ' + badgeClass + '">' + esc(stateName) + '</span>' : '') +
+              (d._stateName ? ' <span class="state-badge ' + badgeClass + '">' + esc(d._stateName) + '</span>' : '') +
               (fbCount ? ' <span class="tag gray" style="font-size:10px;">\u25ce ' + fbCount + '</span>' : '') +
             '</div>' +
             '<div style="font-size:11px;color:var(--text-3);margin-top:3px;">' +
@@ -527,7 +569,16 @@ async function testGateToken() {
               (isAssigned ? ' \u00b7 <strong>Assigned to you</strong>' : '') +
             '</div>' +
           '</div>';
-        });
+        }
+
+        if (roadmapItems.length) {
+          html += '<div style="font-size:13px;font-weight:600;color:#16a34a;margin:12px 0 8px;border-top:1px solid var(--border);padding-top:12px;">En Roadmap (' + roadmapItems.length + ')</div>';
+          roadmapItems.forEach(d => { html += renderDiscItem(d, true); });
+        }
+        if (otherItems.length) {
+          html += '<div style="font-size:13px;font-weight:600;color:var(--text-1);margin:12px 0 8px;' + (roadmapItems.length ? '' : 'border-top:1px solid var(--border);padding-top:12px;') + '">Otras Discoveries (' + otherItems.length + ')</div>';
+          otherItems.forEach(d => { html += renderDiscItem(d, false); });
+        }
       }
 
       // Companies detail
@@ -717,6 +768,7 @@ function resetToken() {
 function stateBadgeClass(stateName) {
   if (!stateName) return 'default';
   const s = stateName.toLowerCase();
+  if (s.includes('roadmap')) return 'roadmap';
   if (s.includes('candidate')) return 'candidate';
   if (s.includes('new')) return 'new';
   if (s.includes('spec')) return 'spec';
@@ -801,19 +853,33 @@ function renderProfileDiscoveries() {
   const wrap = $('profile-tab-pdisc');
   const items = [...S.profile.myDiscoveries].sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
   if (!items.length) { wrap.innerHTML = emptyHTML('\u25c8', 'Sin discoveries vinculadas a tu email'); return; }
-  wrap.innerHTML = items.map(d => {
+
+  // Sort roadmap first
+  const withState = items.map(d => {
+    const sn = d.discoveryStateId ? (S._stateMap && S._stateMap.get(String(d.discoveryStateId))) || '' : '';
+    return { d, sn, isRoadmap: sn.toLowerCase().includes('roadmap') };
+  });
+  const sorted = [...withState.filter(x => x.isRoadmap), ...withState.filter(x => !x.isRoadmap)];
+
+  let html = '';
+  const roadmapCount = sorted.filter(x => x.isRoadmap).length;
+  if (roadmapCount) {
+    html += '<div style="font-size:12.5px;font-weight:600;color:#16a34a;margin-bottom:8px;padding:6px 10px;background:#f0fdf4;border-radius:6px;">En Roadmap: ' + roadmapCount + ' de ' + items.length + '</div>';
+  }
+
+  html += sorted.map(({ d, sn, isRoadmap }) => {
     const title = d.title || d.name || '(sin nombre)';
-    const stateName = d.discoveryStateId ? (S._stateMap && S._stateMap.get(String(d.discoveryStateId))) || '' : '';
-    const badgeClass = stateBadgeClass(stateName);
+    const badgeClass = stateBadgeClass(sn);
     const desc = (d.description || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
     const fbCount = S.data.feedback.filter(f => String(f.discoveryId) === String(d.id)).length;
     const updated = d.updatedAt ? new Date(d.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase() : '';
     const assignee = d.assigneeId ? (userNameById(d.assigneeId) || '') : '';
     const isAssigned = S.profile.userIds.has(String(d.assigneeId || ''));
-    return '<div class="disc-card" onclick=\'openDrawer(' + JSON.stringify(JSON.stringify(d)) + ',"discovery")\'>' +
+    const extra = isRoadmap ? ' style="border-left:3px solid #22c55e;background:#f0fdf4;"' : '';
+    return '<div class="disc-card"' + extra + ' onclick=\'openDrawer(' + JSON.stringify(JSON.stringify(d)) + ',"discovery")\'>' +
       '<div class="disc-card-title">' +
         esc(title) +
-        (stateName ? ' <span class="state-badge ' + badgeClass + '">' + esc(stateName) + '</span>' : '') +
+        (sn ? ' <span class="state-badge ' + badgeClass + '">' + esc(sn) + '</span>' : '') +
         (fbCount ? ' <span class="tag gray" style="font-size:10.5px;">\u25ce ' + fbCount + '</span>' : '') +
       '</div>' +
       '<div class="disc-card-meta">' +
@@ -823,6 +889,7 @@ function renderProfileDiscoveries() {
       (desc ? '<div class="disc-card-desc">' + esc(desc.slice(0, 200)) + '</div>' : '') +
     '</div>';
   }).join('');
+  wrap.innerHTML = html;
 }
 
 function renderProfileCompanies() {
@@ -1308,17 +1375,17 @@ async function refreshData() {
   if (!S.token) { navigate('token'); return; }
   setBtnLoading('refreshBtn', true, '\u21ba Cargando...');
   try {
-    // Re-fetch all data from API (sequentially to avoid rate limiting)
-    setBtnLoading('refreshBtn', true, '↻ Usuarios...');
-    try { S.data.users = await apiAllPages('/user?per_page=100'); } catch(e) { console.warn('[REFRESH] users:', e.message); }
-    setBtnLoading('refreshBtn', true, '↻ Companies...');
-    try { S.data.companies = await apiAllPages('/company?per_page=100'); } catch(e) { console.warn('[REFRESH] companies:', e.message); }
+    // Re-fetch all data from API (sequentially, feedback & discoveries first)
+    setBtnLoading('refreshBtn', true, '↻ Feedback...');
+    try { S.data.feedback = await apiAllPages('/feedback?per_page=100'); } catch(e) { console.warn('[REFRESH] feedback:', e.message); }
     setBtnLoading('refreshBtn', true, '↻ Discoveries...');
     try { S.data.discoveries = await apiAllPages('/discovery?per_page=100'); } catch(e) { console.warn('[REFRESH] discoveries:', e.message); }
     setBtnLoading('refreshBtn', true, '↻ Messages...');
     try { S.data.messages = await apiAllPages('/message?per_page=100'); } catch(e) { console.warn('[REFRESH] messages:', e.message); }
-    setBtnLoading('refreshBtn', true, '↻ Feedback...');
-    try { S.data.feedback = await apiAllPages('/feedback?per_page=100'); } catch(e) { console.warn('[REFRESH] feedback:', e.message); }
+    setBtnLoading('refreshBtn', true, '↻ Usuarios...');
+    try { S.data.users = await apiAllPages('/user?per_page=100'); } catch(e) { console.warn('[REFRESH] users:', e.message); }
+    setBtnLoading('refreshBtn', true, '↻ Companies...');
+    try { S.data.companies = await apiAllPages('/company?per_page=100'); } catch(e) { console.warn('[REFRESH] companies:', e.message); }
 
     // Re-enrich feedback
     const msgMap = new Map();
