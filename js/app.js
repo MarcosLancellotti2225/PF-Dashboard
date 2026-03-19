@@ -23,10 +23,14 @@ function emptyHTML(icon, msg) {
 }
 
 function updateBadges() {
-  $('badge-feedback').textContent    = S.data.feedback.length    || '\u2014';
-  $('badge-discoveries').textContent = S.data.discoveries.length || '\u2014';
-  $('badge-companies').textContent   = S.data.companies.length   || '\u2014';
-  $('badge-messages').textContent    = S.data.messages.length    || '\u2014';
+  const fb = S.data.feedback.length;
+  const disc = S.data.discoveries.length;
+  const comp = S.data.companies.length;
+  const msg = S.data.messages.length;
+  $('badge-feedback').textContent    = fb || '\u2014';
+  $('badge-discoveries').textContent = disc || '\u2014';
+  $('badge-companies').textContent   = comp || '\u2014';
+  $('badge-messages').textContent    = msg || '\u2014';
 }
 
 function setBtnLoading(id, loading, label) {
@@ -111,13 +115,15 @@ async function loadAll() {
   const loadingText = $('dash-loading-text');
   if (loadingText) loadingText.textContent = 'Cargando todas las p\u00e1ginas de Harvestr...';
 
-  // Fetch all pages for each endpoint
+  // Fetch all pages for each endpoint (reuse preloaded discoveries if available)
+  const hasPreloaded = S._preloadedDiscoveries && S._preloadedDiscoveries.length;
   const rs = await Promise.allSettled([
     apiAllPages('/feedback?per_page=100'),
-    apiAllPages('/discovery?per_page=100'),
+    hasPreloaded ? Promise.resolve(S._preloadedDiscoveries) : apiAllPages('/discovery?per_page=100'),
     apiAllPages('/company?per_page=100'),
     apiAllPages('/message?per_page=100')
   ]);
+  delete S._preloadedDiscoveries;
 
   S.data.feedback    = rs[0].status === 'fulfilled' ? rs[0].value : [];
   S.data.discoveries = rs[1].status === 'fulfilled' ? rs[1].value : [];
@@ -137,21 +143,58 @@ async function loadAll() {
     }
   }
 
+  // Build lookup maps for resolving references
+  const msgMap = new Map();
+  S.data.messages.forEach(m => msgMap.set(String(m.id), m));
+  const discMap = new Map();
+  S.data.discoveries.forEach(d => discMap.set(String(d.id), d));
+  const compMap = new Map();
+  S.data.companies.forEach(c => compMap.set(String(c.id), c));
+  const userMap = new Map();
+  S.data.users.forEach(u => userMap.set(String(u.id), u));
+
+  // Enrich feedback items by resolving messageId → message, discoveryId → discovery
+  // Harvestr feedback has: id, messageId, discoveryId, score, starred, selections[]
+  // We need to resolve these to get title, content, source, company, discovery name
+  S.data.feedback = S.data.feedback.map(f => {
+    const msg = f.messageId ? msgMap.get(String(f.messageId)) : null;
+    const disc = f.discoveryId ? discMap.get(String(f.discoveryId)) : null;
+    const requester = msg && msg.requesterId ? userMap.get(String(msg.requesterId)) : null;
+    const company = requester && requester.companyId ? compMap.get(String(requester.companyId)) : null;
+    const selectionText = (f.selections || []).map(s => s.content || '').join(' ').trim();
+    return {
+      ...f,
+      // Resolved display fields
+      _title: msg ? (msg.title || selectionText || '(sin título)') : (selectionText || '(sin título)'),
+      _content: selectionText || (msg ? msg.content : '') || '',
+      _source: msg ? (msg.channel || '') : '',
+      _company: company || null,
+      _companyId: company ? String(company.id) : (requester ? String(requester.companyId || '') : ''),
+      _companyName: company ? company.name : '',
+      _discovery: disc || null,
+      _discoveryName: disc ? (disc.title || disc.name || '') : '',
+      _discoveryId: f.discoveryId || '',
+      _requester: requester || null,
+      _requesterName: requester ? (requester.name || requester.email || '') : '',
+      _date: f.createdAt || (msg ? msg.createdAt : '') || ''
+    };
+  });
+
+  console.log('[ENRICHED] First feedback:', S.data.feedback.length ? S.data.feedback[0] : 'none');
+
   // Apply pre-query filters (client-side)
   if (S.filters.companyId) {
-    const compName = S.data.companies.find(c => String(c.id) === S.filters.companyId);
-    console.log('[FILTER] Company:', compName ? compName.name : S.filters.companyId);
-    S.data.feedback = S.data.feedback.filter(f => fbMatchesCompany(f, S.filters.companyId));
+    const comp = compMap.get(S.filters.companyId);
+    console.log('[FILTER] Company:', comp ? comp.name : S.filters.companyId);
+    S.data.feedback = S.data.feedback.filter(f => f._companyId === S.filters.companyId);
     console.log('[FILTER] Feedback after company filter:', S.data.feedback.length);
   }
   if (S.filters.userId) {
-    const userName = S.data.users.find(u => String(u.id) === S.filters.userId);
-    console.log('[FILTER] Teammate:', userName ? (userName.name || userName.email) : S.filters.userId);
-    // Filter discoveries by assignee
-    S.data.discoveries = S.data.discoveries.filter(d => {
-      const aId = d.assigneeId || d.assignee_id || (d.assignee && typeof d.assignee === 'object' ? String(d.assignee.id) : null);
-      return String(aId) === S.filters.userId;
-    });
+    const user = userMap.get(S.filters.userId);
+    console.log('[FILTER] Teammate:', user ? (user.name || user.email) : S.filters.userId);
+    S.data.discoveries = S.data.discoveries.filter(d =>
+      String(d.assigneeId || '') === S.filters.userId
+    );
     console.log('[FILTER] Discoveries after teammate filter:', S.data.discoveries.length);
   }
 
@@ -182,17 +225,46 @@ async function testGateToken() {
       compSel.innerHTML = '<option value="">-- Todas las companies --</option>' +
         sorted.map(c => '<option value="' + esc(String(c.id)) + '">' + esc(c.name || '(sin nombre)') + '</option>').join('');
     }
+    // Also preload discoveries to extract assignees (teammates)
+    setBtnLoading('gateTestBtn', true, 'Cargando discoveries...');
+    const discRs = await apiAllPages('/discovery?per_page=100', tk);
+    S._preloadedDiscoveries = discRs;
+
+    // Try to load discovery states for labeling
+    try {
+      const statesRs = await api('/discoverystate?per_page=100', tk);
+      const states = safe(statesRs);
+      S._stateMap = new Map();
+      states.forEach(s => S._stateMap.set(String(s.id), s.name || s.title || String(s.id)));
+      console.log('[PRELOAD] discovery states:', S._stateMap.size, [...S._stateMap.values()]);
+    } catch (e) {
+      console.warn('Could not load discovery states:', e.message);
+      S._stateMap = new Map();
+    }
+
+    // Extract unique assignees from discoveries (these are the real teammates)
+    const teammateMap = new Map();
+    discRs.forEach(d => {
+      if (d.assigneeId) {
+        const user = S.data.users.find(u => String(u.id) === String(d.assigneeId));
+        if (!teammateMap.has(String(d.assigneeId))) {
+          teammateMap.set(String(d.assigneeId), user ? (user.name || user.email) : ('User ' + String(d.assigneeId).slice(0, 8)));
+        }
+      }
+    });
+    console.log('[PRELOAD] teammates found in discoveries:', teammateMap.size, [...teammateMap.values()]);
+
     const userSel = $('gate-user');
     if (userSel) {
-      const sorted = [...S.data.users].sort((a,b) => (a.name || a.email || '').localeCompare(b.name || b.email || ''));
+      const sorted = [...teammateMap.entries()].sort((a,b) => a[1].localeCompare(b[1]));
       userSel.innerHTML = '<option value="">-- Todos los teammates --</option>' +
-        sorted.map(u => '<option value="' + esc(String(u.id)) + '">' + esc(u.name || u.email || String(u.id)) + '</option>').join('');
+        sorted.map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
     }
 
     // Switch to step 2
     $('gate-step1').style.display = 'none';
     $('gate-step2').style.display = 'block';
-    $('gate-step2-info').textContent = '\u2713 Token v\u00e1lido \u2014 ' + S.data.companies.length + ' companies, ' + S.data.users.length + ' users encontrados.';
+    $('gate-step2-info').textContent = '\u2713 Token v\u00e1lido \u2014 ' + S.data.companies.length + ' companies, ' + teammateMap.size + ' teammates encontrados.';
   } catch (e) {
     el.innerHTML = '<div class="alert error">\u2717 ' + esc(e.message) + '</div>';
   }
@@ -282,12 +354,12 @@ function navigate(view, skipRender) {
   const filterParts = [];
   if (S.userName) filterParts.push(S.userName);
   if (S.filters.companyId) {
-    const c = S.data.companies.find(c => String(c.id) === S.filters.companyId);
+    const c = S.data.companies.find(x => String(x.id) === S.filters.companyId);
     if (c) filterParts.push(c.name);
   }
   if (S.filters.userId) {
-    const u = S.data.users.find(u => String(u.id) === S.filters.userId);
-    if (u) filterParts.push(u.name || u.email);
+    const u = userNameById(S.filters.userId);
+    if (u) filterParts.push(u);
   }
   $('topbarSub').textContent = filterParts.join(' \u00b7 ');
   $('topbarSep').style.display = filterParts.length ? 'inline' : 'none';
@@ -315,24 +387,6 @@ function showPanel(id) {
 }
 
 // ── DASHBOARD ────────────────────────────────────
-// Match feedback item to a company ID (handles object or string/ID references)
-function fbMatchesCompany(f, companyId) {
-  const fc = f.company || f.companyId || f.company_id;
-  if (!fc) return false;
-  if (typeof fc === 'object') {
-    return String(fc.id) === companyId || String(fc.name) === companyId;
-  }
-  return String(fc) === companyId;
-}
-
-// Get display name for a company reference in feedback
-function companyLabel(c) {
-  if (!c) return null;
-  if (typeof c === 'object') return c.name || String(c.id);
-  // Try to resolve ID to name from companies list
-  const co = S.data.companies.find(x => String(x.id) === String(c));
-  return co ? co.name : String(c);
-}
 
 function renderDashboard() {
   $('dash-loading').style.display = 'none';
@@ -347,12 +401,12 @@ function renderDashboard() {
   const banner = $('dash-filter-banner');
   const bannerParts = [];
   if (S.filters.companyId) {
-    const c = S.data.companies.find(c => String(c.id) === S.filters.companyId);
+    const c = S.data.companies.find(x => String(x.id) === S.filters.companyId);
     if (c) bannerParts.push('Company: ' + c.name);
   }
   if (S.filters.userId) {
-    const u = S.data.users.find(u => String(u.id) === S.filters.userId);
-    if (u) bannerParts.push('Teammate: ' + (u.name || u.email));
+    const u = userNameById(S.filters.userId);
+    if (u) bannerParts.push('Teammate: ' + u);
   }
   if (banner) {
     if (bannerParts.length) {
@@ -370,12 +424,10 @@ function renderDashboard() {
     '<div class="stat-card purple"><div class="stat-label">Companies</div><div class="stat-value">' + S.data.companies.length + '</div><div class="stat-sub">clientes registrados</div></div>' +
     '<div class="stat-card amber"><div class="stat-label">Messages</div><div class="stat-value">' + S.data.messages.length + '</div><div class="stat-sub">mensajes importados</div></div>';
 
-  // Discoveries with most feedback (uses filtered fb)
+  // Discoveries with most feedback (uses enriched feedback)
   const dm = {};
   fb.forEach(f => {
-    const d = f.discovery;
-    if (!d) return;
-    const k = typeof d === 'object' ? (d.name || d.title || d.id) : d;
+    const k = f._discoveryName;
     if (k) dm[k] = (dm[k] || 0) + 1;
   });
   const td = Object.entries(dm).sort((a,b) => b[1] - a[1]).slice(0, 8);
@@ -384,11 +436,10 @@ function renderDashboard() {
     ? td.map(([n,c]) => '<div class="bar-row"><div class="bar-label" title="' + esc(n) + '">' + esc(n) + '</div><div class="bar-track"><div class="bar-fill blue" style="width:' + ((c/md)*100) + '%"></div></div><div class="bar-count">' + c + '</div></div>').join('')
     : '<div style="color:var(--text-3);font-size:13px;">Sin datos vinculados a\u00fan</div>';
 
-  // Discovery states
+  // Discovery states (using discoveryStateId — show ID for now, could resolve to names)
   const sm = {};
   disc.forEach(d => {
-    const s = d.state;
-    const k = s ? (typeof s === 'object' ? s.name : s) : 'Sin estado';
+    const k = d.discoveryStateId ? (S._stateMap && S._stateMap.get(String(d.discoveryStateId))) || ('State ' + String(d.discoveryStateId).slice(0, 6)) : 'Sin estado';
     sm[k] = (sm[k] || 0) + 1;
   });
   const se = Object.entries(sm).sort((a,b) => b[1] - a[1]);
@@ -396,11 +447,10 @@ function renderDashboard() {
     ? se.map(([n,c], i) => '<div class="state-row"><div class="state-name"><div class="state-dot" style="background:' + STATE_COLORS[i % STATE_COLORS.length] + '"></div>' + esc(n) + '</div><div class="state-count">' + c + '</div></div>').join('')
     : '<div style="color:var(--text-3);font-size:13px;">Sin discoveries</div>';
 
-  // Top companies by feedback
+  // Top companies by feedback (using enriched _companyName)
   const cm = {};
   fb.forEach(f => {
-    const label = companyLabel(f.company);
-    if (label) cm[label] = (cm[label] || 0) + 1;
+    if (f._companyName) cm[f._companyName] = (cm[f._companyName] || 0) + 1;
   });
   const tc = Object.entries(cm).sort((a,b) => b[1] - a[1]).slice(0, 8);
   const mc = tc[0] ? tc[0][1] : 1;
@@ -408,14 +458,14 @@ function renderDashboard() {
     ? tc.map(([n,c]) => '<div class="bar-row"><div class="bar-label" title="' + esc(n) + '">' + esc(n) + '</div><div class="bar-track"><div class="bar-fill teal" style="width:' + ((c/mc)*100) + '%"></div></div><div class="bar-count">' + c + '</div></div>').join('')
     : '<div style="color:var(--text-3);font-size:13px;">Sin datos de empresa en feedback</div>';
 
-  // Recent feedback (filtered)
-  const recent = [...fb].sort((a,b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)).slice(0, 6);
+  // Recent feedback (enriched)
+  const recent = [...fb].sort((a,b) => new Date(b._date || 0) - new Date(a._date || 0)).slice(0, 6);
   $('recent-list').innerHTML = recent.length
     ? recent.map(f => {
-        const title = f.title || f.name || '(sin t\u00edtulo)';
-        const company = companyLabel(f.company);
-        const disc = f.discovery ? (typeof f.discovery === 'object' ? (f.discovery.name || f.discovery.title) : f.discovery) : null;
-        const date = f.created_at ? new Date(f.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }) : '';
+        const title = f._title || '(sin t\u00edtulo)';
+        const company = f._companyName;
+        const disc = f._discoveryName;
+        const date = f._date ? new Date(f._date).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }) : '';
         return '<div onclick=\'openDrawer(' + JSON.stringify(JSON.stringify(f)) + ',"feedback")\' style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer;border-radius:4px;padding-left:4px;padding-right:4px;" onmouseenter="this.style.background=\'#f8fafc\'" onmouseleave="this.style.background=\'\'">' +
           '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(title) + '</div><div style="font-size:12px;color:var(--text-3);margin-top:2px;">' + [company, disc].filter(Boolean).map(esc).join(' \u00b7 ') + '</div></div>' +
           '<div style="font-size:11.5px;color:var(--text-3);white-space:nowrap;">' + date + '</div></div>';
@@ -426,20 +476,19 @@ function renderDashboard() {
 // ── TABLES ──────────────────────────────────────
 function renderFbTable(items) {
   const q = S.search.toLowerCase();
-  const shown = q ? items.filter(f => [f.title, f.content, f.description, f.body].map(x => x || '').join(' ').toLowerCase().includes(q)) : items;
+  const shown = q ? items.filter(f => [f._title, f._content, f._companyName, f._discoveryName].map(x => x || '').join(' ').toLowerCase().includes(q)) : items;
   $('fb-count').textContent = shown.length + ' items';
   const wrap = $('fb-wrap');
   if (!shown.length) { wrap.innerHTML = emptyHTML('\u25ce', 'Sin feedback para este filtro'); return; }
 
-  wrap.innerHTML = '<table><thead><tr><th>Feedback</th><th>Source</th><th>Company</th><th>Discovery</th><th>Fecha</th></tr></thead><tbody>' +
+  wrap.innerHTML = '<table translate="no"><thead><tr><th>Feedback</th><th>Source</th><th>Company</th><th>Discovery</th><th>Date</th></tr></thead><tbody>' +
     shown.map((f, i) => {
-      const title = f.title || f.name || '(sin t\u00edtulo)';
-      const rawExcerpt = f.content || f.description || f.body || '';
-      const excerpt = rawExcerpt.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-      const src = f.source || f.origin || '\u2014';
-      const comp = f.company ? (typeof f.company === 'object' ? f.company.name : f.company) : '\u2014';
-      const disc = f.discovery ? (typeof f.discovery === 'object' ? (f.discovery.name || f.discovery.title) : f.discovery) : '\u2014';
-      const date = f.created_at ? new Date(f.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '\u2014';
+      const title = f._title || '(sin t\u00edtulo)';
+      const excerpt = (f._content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      const src = f._source || '\u2014';
+      const comp = f._companyName || '\u2014';
+      const disc = f._discoveryName || '\u2014';
+      const date = f._date ? new Date(f._date).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '\u2014';
       return '<tr data-i="' + i + '"><td><div class="td-title">' + esc(title) + '</div>' + (excerpt ? '<div class="td-excerpt">' + esc(excerpt.slice(0, 100)) + (excerpt.length > 100 ? '\u2026' : '') + '</div>' : '') + '</td><td><span class="tag gray">' + esc(src) + '</span></td><td class="td-meta">' + esc(comp) + '</td><td class="td-meta" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(disc) + '</td><td class="td-date">' + date + '</td></tr>';
     }).join('') + '</tbody></table>';
   clicks(wrap, shown, 'feedback');
@@ -447,39 +496,42 @@ function renderFbTable(items) {
 
 function renderDiscTable(items) {
   const q = S.search.toLowerCase();
-  const shown = q ? items.filter(d => [d.name, d.title, d.description].map(x => x || '').join(' ').toLowerCase().includes(q)) : items;
+  const shown = q ? items.filter(d => [d.title, d.description].map(x => x || '').join(' ').toLowerCase().includes(q)) : items;
   $('disc-count').textContent = shown.length + ' discoveries';
   const wrap = $('disc-wrap');
   if (!shown.length) { wrap.innerHTML = emptyHTML('\u25c8', 'Sin discoveries para este filtro'); return; }
 
-  wrap.innerHTML = '<table><thead><tr><th>Discovery</th><th>Estado</th><th>Assignee</th><th>Componente</th><th>Feedback</th><th>Actualizado</th></tr></thead><tbody>' +
+  wrap.innerHTML = '<table translate="no"><thead><tr><th>Discovery</th><th>State</th><th>Assignee</th><th>Feedback</th><th>Updated</th></tr></thead><tbody>' +
     shown.map((d, i) => {
-      const name = d.name || d.title || '(sin nombre)';
+      const name = d.title || d.name || '(sin nombre)';
       const rawDesc = d.description || '';
       const desc = rawDesc.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-      const state = d.state ? (typeof d.state === 'object' ? d.state.name : d.state) : '\u2014';
-      const aId = d.assigneeId || d.assignee_id;
-      const assignee = d.assignee ? (typeof d.assignee === 'object' ? (d.assignee.name || d.assignee.email) : d.assignee) : (aId ? userNameById(aId) : '\u2014');
-      const comp = d.component ? (typeof d.component === 'object' ? d.component.name : d.component) : '\u2014';
-      const fbC = d.feedback_count !== undefined ? d.feedback_count : (d.feedbacks_count !== undefined ? d.feedbacks_count : '\u2014');
-      const date = d.updated_at ? new Date(d.updated_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '\u2014';
-      return '<tr data-i="' + i + '"><td><div class="td-title">' + esc(name) + '</div>' + (desc ? '<div class="td-excerpt">' + esc(desc.slice(0, 80)) + (desc.length > 80 ? '\u2026' : '') + '</div>' : '') + '</td><td><span class="tag blue">' + esc(state) + '</span></td><td class="td-meta">' + esc(assignee || '\u2014') + '</td><td class="td-meta">' + esc(comp) + '</td><td><span class="tag teal">' + fbC + '</span></td><td class="td-date">' + date + '</td></tr>';
+      // Resolve state from discoveryStateId
+      const stateId = d.discoveryStateId;
+      const stateLabel = stateId ? (S._stateMap && S._stateMap.get(String(stateId))) || stateId : '\u2014';
+      const assignee = d.assigneeId ? (userNameById(d.assigneeId) || d.assigneeId) : '\u2014';
+      // Count feedback linked to this discovery
+      const fbC = S.data.feedback.filter(f => String(f.discoveryId) === String(d.id)).length;
+      const date = d.updatedAt ? new Date(d.updatedAt).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '\u2014';
+      return '<tr data-i="' + i + '"><td><div class="td-title">' + esc(name) + '</div>' + (desc ? '<div class="td-excerpt">' + esc(desc.slice(0, 80)) + (desc.length > 80 ? '\u2026' : '') + '</div>' : '') + '</td><td><span class="tag blue">' + esc(stateLabel) + '</span></td><td class="td-meta">' + esc(assignee) + '</td><td><span class="tag teal">' + fbC + '</span></td><td class="td-date">' + date + '</td></tr>';
     }).join('') + '</tbody></table>';
   clicks(wrap, shown, 'discovery');
 }
 
 function renderCompTable(items) {
   const q = S.search.toLowerCase();
-  const shown = q ? items.filter(c => [c.name, c.domain].map(x => x || '').join(' ').toLowerCase().includes(q)) : items;
+  const shown = q ? items.filter(c => (c.name || '').toLowerCase().includes(q)) : items;
   $('comp-count').textContent = shown.length + ' empresas';
   const wrap = $('comp-wrap');
   if (!shown.length) { wrap.innerHTML = emptyHTML('\u25a6', 'Sin companies'); return; }
 
-  wrap.innerHTML = '<table><thead><tr><th>Company</th><th>Dominio</th><th>Feedback</th><th>Creada</th></tr></thead><tbody>' +
+  wrap.innerHTML = '<table translate="no"><thead><tr><th>Company</th><th>Segments</th><th>Feedback</th><th>Users</th><th>Created</th></tr></thead><tbody>' +
     shown.map((c, i) => {
-      const fbCount = S.data.feedback.filter(f => fbMatchesCompany(f, String(c.id))).length;
-      const date = c.created_at ? new Date(c.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '\u2014';
-      return '<tr data-i="' + i + '"><td class="td-title">' + esc(c.name || '(sin nombre)') + '</td><td class="td-meta">' + esc(c.domain || c.website || '\u2014') + '</td><td>' + (fbCount > 0 ? '<span class="tag blue">' + fbCount + '</span>' : '<span class="td-meta">0</span>') + '</td><td class="td-date">' + date + '</td></tr>';
+      const fbCount = S.data.feedback.filter(f => f._companyId === String(c.id)).length;
+      const userCount = S.data.users.filter(u => String(u.companyId) === String(c.id)).length;
+      const segs = (c.segments || []).map(s => s.name).filter(Boolean).join(', ');
+      const date = c.createdAt ? new Date(c.createdAt).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '\u2014';
+      return '<tr data-i="' + i + '"><td class="td-title">' + esc(c.name || '(sin nombre)') + '</td><td class="td-meta">' + esc(segs || '\u2014') + '</td><td>' + (fbCount > 0 ? '<span class="tag blue">' + fbCount + '</span>' : '<span class="td-meta">0</span>') + '</td><td class="td-meta">' + userCount + '</td><td class="td-date">' + date + '</td></tr>';
     }).join('') + '</tbody></table>';
   clicks(wrap, shown, 'company');
 }
@@ -488,13 +540,15 @@ function renderMsgTable(items) {
   const wrap = $('msg-wrap');
   if (!items.length) { wrap.innerHTML = emptyHTML('\u2709', 'Sin mensajes'); return; }
 
-  wrap.innerHTML = '<table><thead><tr><th>Mensaje</th><th>Autor</th><th>Fecha</th></tr></thead><tbody>' +
+  wrap.innerHTML = '<table translate="no"><thead><tr><th>Message</th><th>Channel</th><th>Requester</th><th>Date</th></tr></thead><tbody>' +
     items.map((m, i) => {
-      const content = m.content || m.text || m.body || '(sin contenido)';
-      const a = m.author || m.from || m.user || '\u2014';
-      const aStr = typeof a === 'object' ? (a.name || a.email || JSON.stringify(a)) : a;
-      const date = m.created_at ? new Date(m.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '\u2014';
-      return '<tr data-i="' + i + '"><td><div class="td-excerpt" style="max-width:420px;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">' + esc(content.slice(0, 200)) + '</div></td><td class="td-meta">' + esc(aStr) + '</td><td class="td-date">' + date + '</td></tr>';
+      const title = m.title || '';
+      const content = m.content || '(sin contenido)';
+      const excerpt = content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      const channel = m.channel || '\u2014';
+      const requester = m.requesterId ? (userNameById(m.requesterId) || m.requesterId) : '\u2014';
+      const date = m.createdAt ? new Date(m.createdAt).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '\u2014';
+      return '<tr data-i="' + i + '"><td>' + (title ? '<div class="td-title">' + esc(title) + '</div>' : '') + '<div class="td-excerpt" style="max-width:420px;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">' + esc(excerpt.slice(0, 200)) + '</div></td><td><span class="tag gray">' + esc(channel) + '</span></td><td class="td-meta">' + esc(requester) + '</td><td class="td-date">' + date + '</td></tr>';
     }).join('') + '</tbody></table>';
   clicks(wrap, items, 'message');
 }
@@ -535,19 +589,32 @@ function sanitizeHTML(html) {
 function buildDrawer(item, type) {
   const typeLabel = { feedback: 'Feedback', discovery: 'Discovery', company: 'Company', message: 'Mensaje' }[type] || type;
   const typeTag = { feedback: 'blue', discovery: 'teal', company: 'purple', message: 'amber' }[type] || 'gray';
-  const title = item.title || item.name || (item.content || '').slice(0, 70) || (type + ' detail');
-  const skip = new Set(['id','title','name','description','content','body','state','component','source','company','discovery','created_at','updated_at','feedback_count','feedbacks_count']);
+  // Use enriched fields for feedback, standard fields for others
+  const title = item._title || item.title || item.name || (item.content || '').slice(0, 70) || (type + ' detail');
+  const skip = new Set(['id','title','name','description','content','body','state','component','source','company','discovery','created_at','updated_at','createdAt','updatedAt','feedback_count','feedbacks_count','_title','_content','_source','_company','_companyId','_companyName','_discovery','_discoveryId','_discoveryName','_requester','_requesterName','_date','selections','messageId','discoveryId','clientId','starred','score']);
 
   const keyFields = [];
-  if (item.description || item.content || item.body) keyFields.push({ l: 'Descripci\u00f3n / Contenido', v: item.description || item.content || item.body, html: true });
-  if (item.state) keyFields.push({ l: 'Estado', v: typeof item.state === 'object' ? (item.state.name || JSON.stringify(item.state)) : item.state });
-  if (item.component) keyFields.push({ l: 'Componente', v: typeof item.component === 'object' ? (item.component.name || JSON.stringify(item.component)) : item.component });
-  if (item.source) keyFields.push({ l: 'Source', v: item.source });
-  if (item.company) keyFields.push({ l: 'Company', v: typeof item.company === 'object' ? (item.company.name || JSON.stringify(item.company)) : item.company });
-  if (item.discovery) keyFields.push({ l: 'Discovery', v: typeof item.discovery === 'object' ? (item.discovery.name || item.discovery.title || JSON.stringify(item.discovery)) : item.discovery });
-  if (item.feedback_count !== undefined) keyFields.push({ l: 'Feedback Count', v: item.feedback_count });
-  if (item.created_at) keyFields.push({ l: 'Creado', v: new Date(item.created_at).toLocaleString('es-ES') });
-  if (item.updated_at) keyFields.push({ l: 'Actualizado', v: new Date(item.updated_at).toLocaleString('es-ES') });
+  if (type === 'feedback') {
+    // Enriched feedback fields
+    if (item._content) keyFields.push({ l: 'Contenido', v: item._content, html: true });
+    if (item._source) keyFields.push({ l: 'Canal', v: item._source });
+    if (item._companyName) keyFields.push({ l: 'Company', v: item._companyName });
+    if (item._discoveryName) keyFields.push({ l: 'Discovery', v: item._discoveryName });
+    if (item._requesterName) keyFields.push({ l: 'Requester', v: item._requesterName });
+    if (item.score !== undefined) keyFields.push({ l: 'Score', v: String(item.score) });
+    if (item.starred) keyFields.push({ l: 'Starred', v: '\u2605 S\u00ed' });
+    if (item._date) keyFields.push({ l: 'Creado', v: new Date(item._date).toLocaleString('es-ES') });
+  } else {
+    if (item.description || item.content) keyFields.push({ l: 'Descripci\u00f3n / Contenido', v: item.description || item.content, html: true });
+    if (item.discoveryStateId) {
+      const stateLabel = S._stateMap && S._stateMap.get(String(item.discoveryStateId));
+      keyFields.push({ l: 'Estado', v: stateLabel || item.discoveryStateId });
+    }
+    if (item.channel) keyFields.push({ l: 'Canal', v: item.channel });
+    if (item.assigneeId) keyFields.push({ l: 'Assignee', v: userNameById(item.assigneeId) || item.assigneeId });
+    if (item.createdAt) keyFields.push({ l: 'Creado', v: new Date(item.createdAt).toLocaleString('es-ES') });
+    if (item.updatedAt) keyFields.push({ l: 'Actualizado', v: new Date(item.updatedAt).toLocaleString('es-ES') });
+  }
 
   const otherFields = Object.entries(item).filter(([k]) => !skip.has(k));
 
@@ -571,21 +638,17 @@ function buildDrawer(item, type) {
 async function loadLinkedFb(discId) {
   const el = document.getElementById('linked-fb-wrap');
   if (!el) return;
-  try {
-    const raw = await api('/discovery/' + discId + '/feedback?limit=50');
-    const items = safe(raw);
-    if (!items.length) { el.innerHTML = '<div style="color:var(--text-3);font-size:13px;">Sin feedback vinculado</div>'; return; }
-    el.innerHTML = items.map(f => {
-      const title = f.title || f.name || '(sin t\u00edtulo)';
-      const company = f.company ? (typeof f.company === 'object' ? f.company.name : f.company) : null;
-      const date = f.created_at ? new Date(f.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
-      return '<div class="linked-item" onclick=\'openDrawer(' + JSON.stringify(JSON.stringify(f)) + ',"feedback")\'>' +
-        '<div style="font-size:13px;font-weight:500;">' + esc(title) + '</div>' +
-        '<div style="font-size:12px;color:var(--text-3);margin-top:3px;">' + [company, date].filter(Boolean).map(esc).join(' \u00b7 ') + '</div></div>';
-    }).join('');
-  } catch (e) {
-    if (el) el.innerHTML = '<div style="color:var(--red);font-size:12px;">Error: ' + esc(e.message) + '</div>';
-  }
+  // Show feedback already loaded and enriched from local data
+  const linked = S.data.feedback.filter(f => String(f.discoveryId) === String(discId));
+  if (!linked.length) { el.innerHTML = '<div style="color:var(--text-3);font-size:13px;">Sin feedback vinculado</div>'; return; }
+  el.innerHTML = linked.map(f => {
+    const title = f._title || '(sin t\u00edtulo)';
+    const company = f._companyName;
+    const date = f._date ? new Date(f._date).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+    return '<div class="linked-item" onclick=\'openDrawer(' + JSON.stringify(JSON.stringify(f)) + ',"feedback")\'>' +
+      '<div style="font-size:13px;font-weight:500;">' + esc(title) + '</div>' +
+      '<div style="font-size:12px;color:var(--text-3);margin-top:3px;">' + [company, date].filter(Boolean).map(esc).join(' \u00b7 ') + '</div></div>';
+  }).join('');
 }
 
 // ── HELPERS ──────────────────────────────────────
@@ -595,84 +658,65 @@ function userNameById(id) {
   return u ? (u.name || u.email || String(u.id)) : null;
 }
 
-function msgById(id) {
-  return S.data.messages.find(m => String(m.id) === String(id)) || null;
-}
-
-// Get the requester/submitter for a feedback item (via its linked message)
-function fbRequesterInfo(f) {
-  if (!f.messageId) return null;
-  const m = msgById(f.messageId);
-  if (!m) return null;
-  const rId = m.requesterId || m.submitterId;
-  if (!rId) return null;
-  const name = userNameById(rId);
-  return { id: String(rId), name: name || ('User ' + String(rId).slice(0, 8)) };
-}
 
 // ── FILTERS ──────────────────────────────────────
 function populateFilters() {
-  const discN = new Set();
-  S.data.feedback.forEach(f => {
-    const d = f.discovery;
-    if (d) { const k = typeof d === 'object' ? (d.name || d.title || d.id) : d; if (k) discN.add(k); }
-  });
+  // Feedback discovery filter (using enriched _discoveryName)
+  const discN = new Set(S.data.feedback.map(f => f._discoveryName).filter(Boolean));
   $('flt-fb-disc').innerHTML = '<option value="">Todas las Discoveries</option>' + [...discN].sort().map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
 
-  const srcN = new Set(S.data.feedback.map(f => f.source || f.origin).filter(Boolean));
-  $('flt-fb-src').innerHTML = '<option value="">Todos los sources</option>' + [...srcN].sort().map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
+  // Feedback source/channel filter (using enriched _source)
+  const srcN = new Set(S.data.feedback.map(f => f._source).filter(Boolean));
+  $('flt-fb-src').innerHTML = '<option value="">Todos los channels</option>' + [...srcN].sort().map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
 
-  // Feedback user filter via message requester/submitter
-  const fbUserMap = new Map();
+  // Feedback company filter
+  const fbCompMap = new Map();
   S.data.feedback.forEach(f => {
-    const info = fbRequesterInfo(f);
-    if (info) fbUserMap.set(info.id, info.name);
+    if (f._companyId && f._companyName) fbCompMap.set(f._companyId, f._companyName);
   });
   const fbUserEl = $('flt-fb-user');
   if (fbUserEl) {
-    if (fbUserMap.size) {
-      fbUserEl.innerHTML = '<option value="">Todos los usuarios</option>' + [...fbUserMap.entries()].sort((a,b) => a[1].localeCompare(b[1])).map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
+    if (fbCompMap.size) {
+      fbUserEl.innerHTML = '<option value="">Todas las companies</option>' + [...fbCompMap.entries()].sort((a,b) => a[1].localeCompare(b[1])).map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
       fbUserEl.style.display = '';
     } else {
       fbUserEl.style.display = 'none';
     }
   }
 
-  const stN = new Set(S.data.discoveries.map(d => d.state ? (typeof d.state === 'object' ? d.state.name : d.state) : null).filter(Boolean));
-  $('flt-disc-state').innerHTML = '<option value="">Todos los estados</option>' + [...stN].sort().map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
-
-  const compN = new Set(S.data.discoveries.map(d => d.component ? (typeof d.component === 'object' ? d.component.name : d.component) : null).filter(Boolean));
-  $('flt-disc-comp').innerHTML = '<option value="">Todos los componentes</option>' + [...compN].sort().map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
+  // Discovery state filter (using discoveryStateId)
+  const stN = new Set(S.data.discoveries.map(d => d.discoveryStateId).filter(Boolean));
+  $('flt-disc-state').innerHTML = '<option value="">Todos los estados</option>' + [...stN].map(id => {
+    const label = (S._stateMap && S._stateMap.get(String(id))) || ('State ' + String(id).slice(0, 6));
+    return '<option value="' + esc(String(id)) + '">' + esc(label) + '</option>';
+  }).join('');
 
   // Discovery assignee filter
   const assigneeMap = new Map();
   S.data.discoveries.forEach(d => {
-    const aId = d.assigneeId || d.assignee_id;
-    if (aId) {
-      const name = userNameById(aId);
-      assigneeMap.set(String(aId), name || ('User ' + String(aId).slice(0, 8)));
+    if (d.assigneeId) {
+      const name = userNameById(d.assigneeId);
+      assigneeMap.set(String(d.assigneeId), name || ('User ' + String(d.assigneeId).slice(0, 8)));
     }
-    const a = d.assignee;
-    if (a && typeof a === 'object' && a.id) assigneeMap.set(String(a.id), a.name || a.email || ('User ' + String(a.id).slice(0, 8)));
   });
   const discUserEl = $('flt-disc-assignee');
   if (discUserEl) {
     discUserEl.innerHTML = '<option value="">Todos los assignees</option>' + [...assigneeMap.entries()].sort((a,b) => a[1].localeCompare(b[1])).map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
   }
 
+  // Remove component filter (API doesn't expose component directly on discovery)
+  const discCompEl = $('flt-disc-comp');
+  if (discCompEl) discCompEl.style.display = 'none';
 }
 
 function applyFbFilters() {
   const disc = $('flt-fb-disc').value;
   const src = $('flt-fb-src').value;
-  const userId = $('flt-fb-user') ? $('flt-fb-user').value : '';
+  const compId = $('flt-fb-user') ? $('flt-fb-user').value : '';
   S.fil.feedback = S.data.feedback.filter(f => {
-    if (disc) { const d = f.discovery; const k = d ? (typeof d === 'object' ? (d.name || d.title || d.id) : d) : null; if (k !== disc) return false; }
-    if (src) { if ((f.source || f.origin || '') !== src) return false; }
-    if (userId) {
-      const info = fbRequesterInfo(f);
-      if (!info || info.id !== userId) return false;
-    }
+    if (disc && f._discoveryName !== disc) return false;
+    if (src && f._source !== src) return false;
+    if (compId && f._companyId !== compId) return false;
     return true;
   });
   renderFbTable(S.fil.feedback);
@@ -680,15 +724,10 @@ function applyFbFilters() {
 
 function applyDiscFilters() {
   const st = $('flt-disc-state').value;
-  const comp = $('flt-disc-comp').value;
   const assignee = $('flt-disc-assignee') ? $('flt-disc-assignee').value : '';
   S.fil.discoveries = S.data.discoveries.filter(d => {
-    if (st) { const s = d.state; const k = s ? (typeof s === 'object' ? s.name : s) : null; if (k !== st) return false; }
-    if (comp) { const c = d.component; const k = c ? (typeof c === 'object' ? c.name : c) : null; if (k !== comp) return false; }
-    if (assignee) {
-      const aId = d.assigneeId || d.assignee_id || (d.assignee && typeof d.assignee === 'object' ? String(d.assignee.id) : null);
-      if (String(aId) !== assignee) return false;
-    }
+    if (st && String(d.discoveryStateId) !== st) return false;
+    if (assignee && String(d.assigneeId) !== assignee) return false;
     return true;
   });
   renderDiscTable(S.fil.discoveries);
@@ -726,40 +765,44 @@ function exportCSV() {
   if (S.view === 'feedback') {
     fn = 'harvestr-feedback';
     rows = S.fil.feedback.map(f => ({
-      id: f.id || '', title: f.title || f.name || '',
-      content: (f.content || f.description || '').replace(/\n/g, ' '),
-      source: f.source || '',
-      company: f.company ? (typeof f.company === 'object' ? f.company.name : f.company) : '',
-      discovery: f.discovery ? (typeof f.discovery === 'object' ? (f.discovery.name || f.discovery.title) : f.discovery) : '',
-      created_at: f.created_at || ''
+      id: f.id || '', title: f._title || '',
+      content: (f._content || '').replace(/<[^>]+>/g, ' ').replace(/\n/g, ' '),
+      channel: f._source || '',
+      company: f._companyName || '',
+      discovery: f._discoveryName || '',
+      requester: f._requesterName || '',
+      score: f.score !== undefined ? f.score : '',
+      created_at: f._date || ''
     }));
   } else if (S.view === 'discoveries') {
     fn = 'harvestr-discoveries';
     rows = S.fil.discoveries.map(d => ({
-      id: d.id || '', name: d.name || d.title || '',
-      description: (d.description || '').replace(/\n/g, ' '),
-      state: d.state ? (typeof d.state === 'object' ? d.state.name : d.state) : '',
-      component: d.component ? (typeof d.component === 'object' ? d.component.name : d.component) : '',
-      feedback_count: d.feedback_count !== undefined ? d.feedback_count : '',
-      updated_at: d.updated_at || ''
+      id: d.id || '', title: d.title || '',
+      description: (d.description || '').replace(/<[^>]+>/g, ' ').replace(/\n/g, ' '),
+      state: d.discoveryStateId ? ((S._stateMap && S._stateMap.get(String(d.discoveryStateId))) || d.discoveryStateId) : '',
+      assignee: d.assigneeId ? (userNameById(d.assigneeId) || d.assigneeId) : '',
+      feedback_count: S.data.feedback.filter(f => String(f.discoveryId) === String(d.id)).length,
+      updated_at: d.updatedAt || ''
     }));
   } else if (S.view === 'companies') {
     fn = 'harvestr-companies';
     rows = S.fil.companies.map(c => ({
       id: c.id || '', name: c.name || '',
-      domain: c.domain || '', created_at: c.created_at || ''
+      segments: (c.segments || []).map(s => s.name).filter(Boolean).join('; '),
+      feedback_count: S.data.feedback.filter(f => f._companyId === String(c.id)).length,
+      user_count: S.data.users.filter(u => String(u.companyId) === String(c.id)).length,
+      created_at: c.createdAt || ''
     }));
   } else if (S.view === 'messages') {
     fn = 'harvestr-messages';
-    rows = S.data.messages.map(m => {
-      const a = m.author || m.from || m.user || '';
-      return {
-        id: m.id || '',
-        content: (m.content || m.text || m.body || '').replace(/\n/g, ' '),
-        author: typeof a === 'object' ? (a.name || a.email || '') : a,
-        created_at: m.created_at || ''
-      };
-    });
+    rows = S.data.messages.map(m => ({
+      id: m.id || '',
+      title: m.title || '',
+      content: (m.content || '').replace(/<[^>]+>/g, ' ').replace(/\n/g, ' '),
+      channel: m.channel || '',
+      requester: m.requesterId ? (userNameById(m.requesterId) || m.requesterId) : '',
+      created_at: m.createdAt || ''
+    }));
   }
   if (!rows.length) { toast('Sin datos', 'error'); return; }
   const keys = Object.keys(rows[0]);
@@ -777,26 +820,26 @@ function exportDashboardCSV() {
   const fbRows = S.data.feedback.map(f => ({
     type: 'feedback',
     id: f.id || '',
-    title: f.title || f.name || '',
-    content: (f.content || f.description || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replace(/\n/g, ' ').slice(0, 500),
-    source: f.source || '',
-    company: f.company ? (typeof f.company === 'object' ? f.company.name : companyLabel(f.company)) : '',
-    discovery: f.discovery ? (typeof f.discovery === 'object' ? (f.discovery.name || f.discovery.title) : f.discovery) : '',
+    title: f._title || '',
+    content: (f._content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replace(/\n/g, ' ').slice(0, 500),
+    channel: f._source || '',
+    company: f._companyName || '',
+    discovery: f._discoveryName || '',
     state: '',
-    assignee: '',
-    created_at: f.created_at || ''
+    assignee: f._requesterName || '',
+    created_at: f._date || ''
   }));
   const discRows = S.data.discoveries.map(d => ({
     type: 'discovery',
     id: d.id || '',
-    title: d.name || d.title || '',
+    title: d.title || '',
     content: (d.description || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replace(/\n/g, ' ').slice(0, 500),
-    source: '',
+    channel: '',
     company: '',
     discovery: '',
-    state: d.state ? (typeof d.state === 'object' ? d.state.name : d.state) : '',
-    assignee: d.assignee ? (typeof d.assignee === 'object' ? (d.assignee.name || d.assignee.email) : d.assignee) : (userNameById(d.assigneeId || d.assignee_id) || ''),
-    created_at: d.created_at || d.updated_at || ''
+    state: d.discoveryStateId ? ((S._stateMap && S._stateMap.get(String(d.discoveryStateId))) || d.discoveryStateId) : '',
+    assignee: d.assigneeId ? (userNameById(d.assigneeId) || d.assigneeId) : '',
+    created_at: d.createdAt || d.updatedAt || ''
   }));
   const rows = fbRows.concat(discRows);
   if (!rows.length) { toast('Sin datos para exportar', 'error'); return; }
