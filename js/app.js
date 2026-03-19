@@ -94,16 +94,24 @@ async function apiAllPages(path, tk) {
   let all = [];
   let page = 1;
   const maxPages = 50; // safety limit
+  // Extract per_page from path to know the expected page size
+  const ppMatch = path.match(/per_page=(\d+)/);
+  const perPage = ppMatch ? parseInt(ppMatch[1]) : 25;
   while (page <= maxPages) {
     const sep = path.includes('?') ? '&' : '?';
     const res = await api(path + sep + 'page=' + page, tk);
     const items = safe(res);
     all = all.concat(items);
-    // Check pageInfos for total pages
+    // Check pageInfos for total pages (try all known field names)
     const pi = res && res.pageInfos;
-    const totalPages = pi ? (pi.totalPages || pi.total_pages || pi.lastPage || pi.last_page || 0) : 0;
+    const totalPages = pi ? (pi.totalPages || pi.total_pages || pi.lastPage || pi.last_page || pi.pages || 0) : 0;
+    if (page === 1 && pi) console.log('[PAGE-INFO] ' + path + ' pageInfos:', JSON.stringify(pi));
     console.log('[PAGE] ' + path + ' page=' + page + '/' + (totalPages || '?') + ' got=' + items.length + ' total=' + all.length);
-    if (!items.length || page >= totalPages) break;
+    // Stop conditions: no items, or we know totalPages and reached it, or got less than a full page
+    if (!items.length) break;
+    if (totalPages > 0 && page >= totalPages) break;
+    if (totalPages === 0 && items.length < perPage) break; // got less than full page = last page
+    // If we got a full page and don't know totalPages, keep going
     page++;
   }
   return all;
@@ -246,14 +254,40 @@ async function testGateToken() {
     S._preloadedDiscoveries = S.data.discoveries;
 
     // ── USER-CENTRIC CROSS-REFERENCE ──
-    // Find ALL user records matching the email (could be multiple: CUSTOMER + COLLABORATOR)
+    // Ensure me is in the users list (bulk load might not have included them)
+    if (!S.data.users.find(u => String(u.id) === String(me.id))) {
+      S.data.users.push(me);
+    }
+    // Also load ALL users matching this email (could have multiple records)
+    let emailUsers = [];
+    try {
+      const euRes = await api('/user?email=' + encodeURIComponent(email), tk);
+      emailUsers = safe(euRes);
+      // Merge into users list
+      emailUsers.forEach(eu => {
+        if (!S.data.users.find(u => String(u.id) === String(eu.id))) {
+          S.data.users.push(eu);
+        }
+      });
+    } catch(e) { /* ignore */ }
+
+    // Rebuild user map with complete data
+    userMap.clear();
+    S.data.users.forEach(u => userMap.set(String(u.id), u));
+
+    // Find ALL user IDs for this email
     const emailLower = email.toLowerCase();
     const matchingUsers = S.data.users.filter(u => (u.email || '').toLowerCase() === emailLower);
     const myUserIds = new Set(matchingUsers.map(u => String(u.id)));
-    // Also add the gate user
     myUserIds.add(String(me.id));
 
-    console.log('[XREF] User IDs for email:', [...myUserIds], 'matching records:', matchingUsers.length);
+    console.log('[XREF] User IDs for email:', [...myUserIds], 'matching records:', matchingUsers.length, matchingUsers.map(u => u.name + ' ' + u.type));
+
+    // Debug: log first items to see actual field structure
+    if (S.data.messages.length) console.log('[XREF-DEBUG] First message keys:', Object.keys(S.data.messages[0]), 'requesterId:', S.data.messages[0].requesterId, 'submitterId:', S.data.messages[0].submitterId);
+    if (S.data.feedback.length) console.log('[XREF-DEBUG] First feedback keys:', Object.keys(S.data.feedback[0]), 'messageId:', S.data.feedback[0].messageId);
+    if (S.data.discoveries.length) console.log('[XREF-DEBUG] First discovery keys:', Object.keys(S.data.discoveries[0]), 'assigneeId:', S.data.discoveries[0].assigneeId);
+    console.log('[XREF-DEBUG] me.id:', me.id, 'type:', typeof me.id);
 
     // Messages where this user is requester or submitter
     const myMessages = S.data.messages.filter(m =>
@@ -261,6 +295,11 @@ async function testGateToken() {
     );
     const myMessageIds = new Set(myMessages.map(m => String(m.id)));
     console.log('[XREF] My messages:', myMessages.length);
+    if (!myMessages.length && S.data.messages.length) {
+      // Debug: show sample requesterId/submitterId to understand format
+      const sample = S.data.messages.slice(0, 3).map(m => ({ requesterId: m.requesterId, submitterId: m.submitterId }));
+      console.log('[XREF-DEBUG] No messages matched. Sample requesterId/submitterId:', sample, 'looking for IDs:', [...myUserIds]);
+    }
 
     // Feedback linked to my messages (messageId matches)
     const myFeedback = S.data.feedback.filter(f => myMessageIds.has(String(f.messageId || '')));
@@ -304,33 +343,39 @@ async function testGateToken() {
       companyMap: companyDetailMap
     };
 
-    // Store cross-referenced data for export
+    // Store cross-referenced data for export (user-centric, not all data)
     S._crossedData = {
-      user: me,
-      collaborators: collaborators.map(u => ({ id: u.id, name: u.name, email: u.email, type: u.type })),
-      companies: S.data.companies.map(c => ({
-        id: c.id, name: c.name, segments: (c.segments || []).map(s => s.name),
-        userCount: customers.filter(u => String(u.companyId) === String(c.id)).length,
-        feedbackCount: S.data.feedback.filter(f => f._companyId === String(c.id)).length
-      })),
-      discoveries: S.data.discoveries.map(d => ({
+      user: { id: me.id, name: me.name, email: me.email, type: me.type, companyId: me.companyId },
+      myCompanies: myCompanies.map(c => {
+        const detail = companyDetailMap.get(String(c.id));
+        return {
+          id: c.id, name: c.name, segments: (c.segments || []).map(s => s.name),
+          userCount: detail ? detail.users.length : 0,
+          feedbackCount: detail ? detail.feedback.length : 0,
+          discoveryCount: detail ? detail.discoveries.length : 0
+        };
+      }),
+      myDiscoveries: myDiscoveries.map(d => ({
         id: d.id, title: d.title, description: (d.description || '').replace(/<[^>]+>/g, ' ').slice(0, 300),
         state: S._stateMap.get(String(d.discoveryStateId)) || d.discoveryStateId || '',
         assignee: d.assigneeId ? (userNameById(d.assigneeId) || d.assigneeId) : '',
         feedbackCount: S.data.feedback.filter(f => String(f.discoveryId) === String(d.id)).length,
-        tags: d.tags || []
+        tags: d.tags || [], updatedAt: d.updatedAt
       })),
-      feedback: S.data.feedback.map(f => ({
+      myFeedback: myFeedback.map(f => ({
         id: f.id, title: f._title, content: (f._content || '').replace(/<[^>]+>/g, ' ').slice(0, 300),
         channel: f._source, company: f._companyName, discovery: f._discoveryName,
         requester: f._requesterName, submitter: f._submitterName,
         score: f.score, starred: f.starred, date: f._date
       })),
-      messages: S.data.messages.map(m => ({
-        id: m.id, title: m.title, channel: m.channel,
-        requester: m.requesterId ? (userNameById(m.requesterId) || m.requesterId) : '',
-        date: m.createdAt
-      }))
+      myMessages: myMessages.map(m => ({
+        id: m.id, title: m.title, content: (m.content || '').replace(/<[^>]+>/g, ' ').slice(0, 300),
+        channel: m.channel, date: m.createdAt
+      })),
+      _workspace: {
+        totalFeedback: S.data.feedback.length, totalDiscoveries: S.data.discoveries.length,
+        totalCompanies: S.data.companies.length, totalMessages: S.data.messages.length
+      }
     };
 
     // Populate company filter
@@ -361,26 +406,131 @@ async function testGateToken() {
         sorted.map(([id, name]) => '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
     }
 
-    // Show summary with user-centric cross-reference
+    // Show detailed cross-reference for the user
     const summary = $('gate-summary');
     if (summary) {
-      summary.innerHTML =
-        '<div style="background:var(--bg-2);border-radius:var(--r);padding:14px;font-size:13px;line-height:1.7;">' +
-        '<div style="font-size:14px;font-weight:600;margin-bottom:6px;">Tu perfil cruzado</div>' +
-        '<div><strong>Usuario:</strong> ' + esc(me.name || '') + ' &lt;' + esc(me.email || '') + '&gt; <span class="tag gray">' + esc(me.type || '') + '</span></div>' +
-        '<div><strong>Tus messages:</strong> ' + myMessages.length + ' (como requester/submitter)</div>' +
-        '<div><strong>Tu feedback:</strong> ' + myFeedback.length + ' (vinculado a tus messages)</div>' +
-        '<div><strong>Tus discoveries:</strong> ' + myDiscoveries.length + ' (assigned: ' + myDiscAssigned.length + ', via feedback: ' + myDiscViaFb.length + ')</div>' +
-        '<div><strong>Tus companies:</strong> ' + myCompanies.length +
-          (myCompanies.length ? ' &mdash; ' + myCompanies.map(c => '<span class="tag purple">' + esc(c.name) + '</span>').join(' ') : '') + '</div>' +
-        '<hr style="border:0;border-top:1px solid var(--border);margin:8px 0;">' +
-        '<div style="color:var(--text-3);">Total en workspace: ' + S.data.feedback.length + ' feedback, ' + S.data.discoveries.length + ' discoveries, ' + S.data.companies.length + ' companies, ' + S.data.messages.length + ' messages</div>' +
-        '</div>';
+      // Sort items by date
+      const sortedFb = [...myFeedback].sort((a,b) => new Date(b._date || 0) - new Date(a._date || 0));
+      const sortedDisc = [...myDiscoveries].sort((a,b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+      const sortedMsg = [...myMessages].sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+      let html = '<div style="background:var(--bg-2);border-radius:var(--r);padding:16px;max-height:55vh;overflow-y:auto;">';
+
+      // User header
+      const initials = ((me.name || me.email || '?').match(/\b\w/g) || []).slice(0, 2).join('').toUpperCase();
+      html += '<div style="display:flex;gap:12px;align-items:center;margin-bottom:14px;">' +
+        '<div style="width:42px;height:42px;border-radius:50%;background:var(--blue);color:white;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;flex-shrink:0;">' + esc(initials) + '</div>' +
+        '<div>' +
+          '<div style="font-size:15px;font-weight:600;">' + esc(me.name || me.email) + '</div>' +
+          '<div style="font-size:12px;color:var(--text-3);">' + esc(me.email || '') + ' <span class="tag gray">' + esc(me.type || '') + '</span></div>' +
+        '</div>' +
+        (myCompanies.length ? '<div style="margin-left:auto;display:flex;gap:4px;flex-wrap:wrap;">' + myCompanies.map(c => '<span class="tag purple">' + esc(c.name) + '</span>').join('') + '</div>' : '') +
+      '</div>';
+
+      // Tabs-like sections
+      html += '<div style="display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap;">' +
+        '<div style="background:var(--blue-dim);color:var(--blue);padding:6px 12px;border-radius:6px;font-size:12.5px;font-weight:600;">Feedback: ' + myFeedback.length + '</div>' +
+        '<div style="background:var(--teal-dim);color:var(--teal);padding:6px 12px;border-radius:6px;font-size:12.5px;font-weight:600;">Discoveries: ' + myDiscoveries.length + '</div>' +
+        '<div style="background:var(--purple-dim);color:var(--purple);padding:6px 12px;border-radius:6px;font-size:12.5px;font-weight:600;">Companies: ' + myCompanies.length + '</div>' +
+        '<div style="background:var(--amber-dim);color:var(--amber);padding:6px 12px;border-radius:6px;font-size:12.5px;font-weight:600;">Messages: ' + myMessages.length + '</div>' +
+      '</div>';
+
+      // Feedback detail
+      if (sortedFb.length) {
+        html += '<div style="font-size:13px;font-weight:600;color:var(--text-1);margin:12px 0 8px;border-top:1px solid var(--border);padding-top:12px;">Feedback (' + sortedFb.length + ')</div>';
+        sortedFb.forEach(f => {
+          const title = f._title || '(sin t\u00edtulo)';
+          const content = (f._content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          const date = f._date ? new Date(f._date).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+          html += '<div style="padding:8px 10px;margin-bottom:4px;background:white;border-radius:6px;border-left:3px solid var(--blue);">' +
+            '<div style="font-size:13px;font-weight:500;color:var(--text-1);">' + esc(title) + '</div>' +
+            '<div style="font-size:11.5px;color:var(--text-3);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap;">' +
+              (f._discoveryName ? '<span>\u25c8 ' + esc(f._discoveryName) + '</span>' : '') +
+              (f._source ? '<span class="tag gray" style="font-size:10px;">' + esc(f._source) + '</span>' : '') +
+              (f._companyName ? '<span>' + esc(f._companyName) + '</span>' : '') +
+              (date ? '<span>' + date + '</span>' : '') +
+            '</div>' +
+            (content ? '<div style="font-size:12px;color:var(--text-2);margin-top:4px;max-height:36px;overflow:hidden;line-height:1.4;">' + esc(content.slice(0, 150)) + '</div>' : '') +
+          '</div>';
+        });
+      }
+
+      // Discoveries detail
+      if (sortedDisc.length) {
+        html += '<div style="font-size:13px;font-weight:600;color:var(--text-1);margin:12px 0 8px;border-top:1px solid var(--border);padding-top:12px;">Discoveries (' + sortedDisc.length + ')</div>';
+        sortedDisc.forEach(d => {
+          const title = d.title || d.name || '(sin nombre)';
+          const stateName = d.discoveryStateId ? (S._stateMap && S._stateMap.get(String(d.discoveryStateId))) || '' : '';
+          const badgeClass = stateBadgeClass(stateName);
+          const updated = d.updatedAt ? new Date(d.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase() : '';
+          const fbCount = S.data.feedback.filter(f => String(f.discoveryId) === String(d.id)).length;
+          const isAssigned = myUserIds.has(String(d.assigneeId || ''));
+          html += '<div style="padding:8px 10px;margin-bottom:4px;background:white;border-radius:6px;border-left:3px solid var(--teal);">' +
+            '<div style="font-size:13px;font-weight:500;color:var(--text-1);display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
+              esc(title) +
+              (stateName ? ' <span class="state-badge ' + badgeClass + '">' + esc(stateName) + '</span>' : '') +
+              (fbCount ? ' <span class="tag gray" style="font-size:10px;">\u25ce ' + fbCount + '</span>' : '') +
+            '</div>' +
+            '<div style="font-size:11px;color:var(--text-3);margin-top:3px;">' +
+              (updated ? 'LAST STATE UPDATE: ' + updated : '') +
+              (isAssigned ? ' \u00b7 <strong>Assigned to you</strong>' : '') +
+            '</div>' +
+          '</div>';
+        });
+      }
+
+      // Companies detail
+      if (myCompanies.length) {
+        html += '<div style="font-size:13px;font-weight:600;color:var(--text-1);margin:12px 0 8px;border-top:1px solid var(--border);padding-top:12px;">Companies (' + myCompanies.length + ')</div>';
+        myCompanies.forEach(c => {
+          const detail = companyDetailMap.get(String(c.id));
+          const segs = (c.segments || []).map(s => s.name).filter(Boolean);
+          html += '<div style="padding:8px 10px;margin-bottom:4px;background:white;border-radius:6px;border-left:3px solid var(--purple);">' +
+            '<div style="font-size:13px;font-weight:500;color:var(--text-1);">' + esc(c.name) + '</div>' +
+            '<div style="font-size:11.5px;color:var(--text-3);margin-top:3px;">' +
+              (detail ? '<strong>' + detail.feedback.length + '</strong> feedback \u00b7 <strong>' + detail.discoveries.length + '</strong> discoveries \u00b7 <strong>' + detail.users.length + '</strong> users' : '') +
+              (segs.length ? ' \u00b7 Segments: ' + segs.map(s => '<span class="tag purple" style="font-size:10px;">' + esc(s) + '</span>').join(' ') : '') +
+            '</div>' +
+          '</div>';
+        });
+      }
+
+      // Messages (show first 10)
+      if (sortedMsg.length) {
+        html += '<div style="font-size:13px;font-weight:600;color:var(--text-1);margin:12px 0 8px;border-top:1px solid var(--border);padding-top:12px;">Messages (' + sortedMsg.length + ')</div>';
+        sortedMsg.slice(0, 10).forEach(m => {
+          const title = m.title || '';
+          const content = (m.content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          const date = m.createdAt ? new Date(m.createdAt).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+          html += '<div style="padding:8px 10px;margin-bottom:4px;background:white;border-radius:6px;border-left:3px solid var(--amber);">' +
+            (title ? '<div style="font-size:13px;font-weight:500;color:var(--text-1);">' + esc(title) + '</div>' : '') +
+            '<div style="font-size:11.5px;color:var(--text-3);margin-top:2px;">' +
+              (m.channel ? '<span class="tag gray" style="font-size:10px;">' + esc(m.channel) + '</span> ' : '') +
+              (date ? date : '') +
+            '</div>' +
+            (content ? '<div style="font-size:12px;color:var(--text-2);margin-top:4px;max-height:36px;overflow:hidden;line-height:1.4;">' + esc(content.slice(0, 150)) + '</div>' : '') +
+          '</div>';
+        });
+        if (sortedMsg.length > 10) {
+          html += '<div style="font-size:12px;color:var(--text-3);margin-top:4px;">+ ' + (sortedMsg.length - 10) + ' messages m\u00e1s</div>';
+        }
+      }
+
+      // Empty state
+      if (!myFeedback.length && !myDiscoveries.length && !myMessages.length) {
+        html += '<div style="text-align:center;padding:20px;color:var(--text-3);font-size:13px;">No se encontr\u00f3 actividad vinculada a este email en feedback, discoveries ni messages.</div>';
+      }
+
+      html += '<hr style="border:0;border-top:1px solid var(--border);margin:12px 0 8px;">' +
+        '<div style="font-size:11.5px;color:var(--text-3);">Total en workspace: ' + S.data.feedback.length + ' feedback, ' + S.data.discoveries.length + ' discoveries, ' + S.data.companies.length + ' companies, ' + S.data.messages.length + ' messages</div>';
+      html += '</div>';
+      summary.innerHTML = html;
     }
 
     // Switch to step 2
     $('gate-step1').style.display = 'none';
     $('gate-step2').style.display = 'block';
+    document.querySelector('.token-gate').classList.add('wide');
     $('gate-step2-info').innerHTML = '<span style="color:var(--green);">\u2713</span> Token v\u00e1lido &mdash; Data cargada y cruzada.';
   } catch (e) {
     el.innerHTML = '<div class="alert error">\u2717 ' + esc(e.message) + '</div>';
@@ -399,11 +549,12 @@ function downloadCrossedJSON() {
   toast('JSON descargado', 'success');
 }
 
-// Download crossed data as CSV (feedback + discoveries combined)
+// Download crossed data as CSV (user-centric: my feedback + my discoveries)
 function downloadCrossedCSV() {
   if (!S._crossedData) { toast('No hay data cruzada', 'error'); return; }
+  const userName = S._crossedData.user.name || S._crossedData.user.email || 'user';
   const rows = [];
-  S._crossedData.feedback.forEach(f => {
+  S._crossedData.myFeedback.forEach(f => {
     rows.push({
       type: 'feedback', id: f.id, title: f.title, content: (f.content || '').replace(/"/g, "'"),
       channel: f.channel, company: f.company, discovery: f.discovery,
@@ -412,13 +563,22 @@ function downloadCrossedCSV() {
       state: '', assignee: '', tags: '', date: f.date
     });
   });
-  S._crossedData.discoveries.forEach(d => {
+  S._crossedData.myDiscoveries.forEach(d => {
     rows.push({
       type: 'discovery', id: d.id, title: d.title, content: (d.description || '').replace(/"/g, "'"),
       channel: '', company: '', discovery: '',
       requester: '', submitter: '',
       score: '', starred: '',
-      state: d.state, assignee: d.assignee, tags: (d.tags || []).join('; '), date: ''
+      state: d.state, assignee: d.assignee, tags: (d.tags || []).join('; '), date: d.updatedAt || ''
+    });
+  });
+  S._crossedData.myMessages.forEach(m => {
+    rows.push({
+      type: 'message', id: m.id, title: m.title || '', content: (m.content || '').replace(/"/g, "'"),
+      channel: m.channel || '', company: '', discovery: '',
+      requester: '', submitter: '',
+      score: '', starred: '',
+      state: '', assignee: '', tags: '', date: m.date || ''
     });
   });
   if (!rows.length) { toast('Sin datos', 'error'); return; }
@@ -426,7 +586,7 @@ function downloadCrossedCSV() {
   const csv = [keys.join(','), ...rows.map(r => keys.map(k => '"' + String(r[k] || '').replace(/"/g, '""') + '"').join(','))].join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' }));
-  a.download = 'harvestr-crossed-' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.download = 'harvestr-' + userName.replace(/[^a-z0-9]/gi, '-') + '-' + new Date().toISOString().slice(0, 10) + '.csv';
   a.click();
   toast('CSV descargado (' + rows.length + ' filas)', 'success');
 }
@@ -434,6 +594,7 @@ function downloadCrossedCSV() {
 function gateGoBack() {
   $('gate-step1').style.display = 'block';
   $('gate-step2').style.display = 'none';
+  document.querySelector('.token-gate').classList.remove('wide');
 }
 
 async function submitGate() {
@@ -495,6 +656,7 @@ function resetToken() {
   $('tokenName').textContent = 'No token set';
   $('gate-step1').style.display = 'block';
   $('gate-step2').style.display = 'none';
+  document.querySelector('.token-gate').classList.remove('wide');
   $('gate-result').innerHTML = '';
   updateBadges();
   navigate('token');
